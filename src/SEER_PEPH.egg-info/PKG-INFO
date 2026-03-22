@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: SEER-PEPH
+Version: 0.1.0
+Summary: Bayesian spatial joint treatment-survival model for SEER-Medicare cancer data (piecewise exponential proportional hazards)
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: pandas>=2.1
+Requires-Dist: scipy>=1.17
+Provides-Extra: inference
+Requires-Dist: numpyro>=0.15; extra == "inference"
+Requires-Dist: jax>=0.4; extra == "inference"
+Requires-Dist: jaxlib>=0.4; extra == "inference"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"

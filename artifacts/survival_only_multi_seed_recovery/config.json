@@ -1,0 +1,29 @@
+{
+  "seeds": [
+    101,
+    202,
+    303,
+    404,
+    505,
+    606,
+    707,
+    808,
+    909,
+    1001
+  ],
+  "A": 20,
+  "k": 4,
+  "n_per_area": 200,
+  "rho_u": 0.5,
+  "phi_surv": 0.8,
+  "phi_ttt": 0.8,
+  "sigma_surv": 0.05,
+  "sigma_ttt": 0.05,
+  "num_chains": 2,
+  "num_warmup": 500,
+  "num_samples": 500,
+  "target_accept_prob": 0.85,
+  "dense_mass": false,
+  "max_tree_depth": 10,
+  "out_dir": "artifacts/survival_only_multi_seed_recovery"
+}
