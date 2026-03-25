@@ -1,0 +1,719 @@
+# SEER-PEPH Developer Guide
+Updated for current implementation state
+
+## 1. Purpose of this package
+
+This package is being developed to fit joint treatment-survival models for SEER-Medicare colorectal cancer data, with a current emphasis on validating the survival component on simulated data before moving to the full joint model.
+
+The current state of the project is:
+
+- data preprocessing is implemented
+- graph construction is implemented
+- simulation is implemented
+- model-data assembly is implemented
+- several survival model variants have been explored and validated on simulated data
+- the current leading survival model is a spatial piecewise-exponential survival model with:
+  - baseline covariate effects
+  - a delta-only post-treatment effect parameterization
+  - spatial frailty
+- treatment-process modeling and the full joint treatment-survival model remain the next major development stage
+
+The package goal is not just to fit models, but to support a reproducible workflow with:
+
+- simulation-based validation
+- inference wrappers
+- prediction under counterfactual treatment times
+- diagnostics and calibration
+- a clear path to real-data analysis
+
+---
+
+## 2. Current package architecture
+
+The current architecture is organized around the following modules.
+
+### 2.1 `seer_peph.data.prep`
+
+This module handles preprocessing and long-format expansion.
+
+Responsibilities:
+
+- load and encode wide patient-level data
+- create model-ready columns such as:
+  - time in months
+  - treatment time in months
+  - binary stage and sex indicators
+  - area identifiers
+- expand survival outcomes into long piecewise-exponential format
+- expand treatment-time outcomes into long piecewise-exponential format
+
+Current survival expansion includes:
+
+- baseline survival interval index `k`
+- post-treatment interval index `k_post`
+- treatment indicator in the long data `treated_td`
+- interval exposure time
+
+Conceptually, this is where the continuous-time problem is converted into a Poisson regression representation.
+
+### 2.2 `seer_peph.data.model_data`
+
+This module converts the long data frames into the array contract used by NumPyro models.
+
+Responsibilities:
+
+- extract arrays for:
+  - survival outcomes
+  - treatment outcomes
+  - design matrices
+  - interval indices
+  - area indices
+- attach graph information:
+  - `node1`
+  - `node2`
+  - `scaling_factor`
+  - number of areas `A`
+- enforce shape and consistency checks
+
+This is the interface layer between pandas-based preprocessing and JAX/NumPyro-based inference.
+
+### 2.3 `seer_peph.graphs`
+
+This module handles spatial graph construction and validation.
+
+Responsibilities:
+
+- build synthetic graphs for simulation studies
+- represent adjacency structure
+- compute graph scaling factors for ICAR/BYM2-style priors
+- validate graph consistency
+
+Synthetic development has used deterministic ring lattices as the main graph family.
+
+### 2.4 `seer_peph.validation.simulate`
+
+This module generates simulated joint treatment-survival data.
+
+Responsibilities:
+
+- simulate baseline covariates
+- simulate treatment timing
+- simulate survival outcomes
+- simulate shared and process-specific spatial frailties
+- store truth columns for later validation
+
+The simulator supports user-controlled truth settings for:
+
+- survival coefficients
+- treatment coefficients
+- treatment-history effects
+- spatial dependence parameters
+- spatial variance parameters
+
+This module is central to the package’s validation strategy.
+
+### 2.5 `seer_peph.models`
+
+This module contains NumPyro model definitions.
+
+Several variants have been explored. The current active survival formulation is the delta-only spatial survival model with independent priors on the post-treatment interval effects.
+
+Older variants remain useful as comparators and development history, but the current leading survival component is:
+
+- spatial survival model
+- no separate acute treatment coefficient
+- delta-only post-treatment effects
+- BYM2-style spatial frailty
+
+### 2.6 `seer_peph.inference.run`
+
+This module provides a thin wrapper around NumPyro MCMC.
+
+Responsibilities:
+
+- build and run NUTS
+- store samples
+- summarize posteriors
+- standardize inference settings
+
+This keeps inference logic out of notebooks and one-off scripts.
+
+### 2.7 `scripts/`
+
+This directory contains executable recovery and diagnostic scripts.
+
+These scripts are used for:
+
+- one-seed recovery
+- multiseed recovery
+- null recovery
+- tumor-size diagnostics
+- post-treatment interval composition diagnostics
+
+The scripts are an essential part of the development workflow and should be maintained as package-level validation assets, not treated as temporary throwaway files.
+
+---
+
+## 3. Mathematical definition of the current survival model
+
+## 3.1 Data structure
+
+For each patient, survival time is expanded into piecewise-exponential intervals.
+
+For each long-format survival row `r`, define:
+
+- `y_r` = event indicator for the interval, taking values 0 or 1
+- `e_r` = exposure time in that interval
+- `k_r` = baseline survival interval index
+- `k_post,r` = post-treatment interval index for treated rows
+- `treated_r` = indicator that this row occurs after treatment initiation
+- `a_r` = area index
+- `x_r` = baseline covariate vector
+
+The baseline covariates currently used in the leading model are:
+
+- age per 10 years, centered
+- CCI
+- log tumor size
+- stage II
+- stage III
+
+---
+
+## 3.2 Piecewise-exponential likelihood
+
+The model uses the standard Poisson representation of the piecewise-exponential survival model.
+
+For row `r`:
+
+y_r ~ Poisson(e_r * lambda_r)
+
+with linear predictor
+
+log(lambda_r) = alpha_{k_r} + x_r transpose beta + u_{a_r} + treated_r * delta_{k_post,r}
+
+where:
+
+- `alpha_k` is the log baseline hazard for survival interval `k`
+- `beta` is the vector of baseline covariate effects
+- `u_a` is the spatial frailty for area `a`
+- `delta_j` is the treatment-history effect for post-treatment interval `j`
+
+In the current delta-only formulation:
+
+- there is no separate `beta_td`
+- `delta_0` is the acute post-treatment effect
+- `delta_1, delta_2, ...` are the treatment effects in later post-treatment intervals
+
+Thus the entire post-treatment hazard effect is represented directly through the `delta` vector.
+
+For untreated rows, `treated_r = 0`, so the treatment-history contribution is zero.
+
+---
+
+## 3.3 Interpretation of the delta-only treatment-history effect
+
+Under the current model, the post-treatment effect at interval `j` is simply:
+
+treatment effect at interval j = delta_j
+
+This differs from the older parameterization, where the treatment effect was decomposed into:
+
+beta_td + delta_j
+
+with delta_0 fixed to zero.
+
+The current parameterization was adopted because it behaved better empirically than the older decomposition.
+
+Interpretation:
+
+- `delta_0` = immediate post-treatment log-hazard shift
+- `delta_1` = early post-treatment log-hazard shift
+- `delta_2` = intermediate post-treatment log-hazard shift
+- `delta_3` = later post-treatment log-hazard shift
+- `delta_4` = late post-treatment log-hazard shift
+
+depending on the post-treatment interval break definitions used in preprocessing.
+
+---
+
+## 3.4 Spatial frailty: BYM2-style formulation
+
+The current survival model includes a BYM2-style spatial frailty.
+
+Let:
+
+u_a = tau * ( sqrt(rho) * s_a + sqrt(1 - rho) * eps_a )
+
+where:
+
+- `s_a` is the structured spatial effect
+- `eps_a` is the unstructured area effect
+- `tau` is the overall frailty scale
+- `rho` is the proportion of variation assigned to the structured component
+
+The structured effect `s` is given an ICAR-style prior through the graph Laplacian penalty.
+
+Let `node1` and `node2` index graph edges. Then the ICAR penalty is:
+
+sum over edges of (s_i - s_j)^2
+
+up to graph scaling.
+
+To identify the ICAR component, the structured effect is represented through free coordinates with a sum-to-zero constraint.
+
+This gives the model the ability to capture:
+
+- broad spatial smoothness
+- local unstructured heterogeneity
+- total area-level hazard variation
+
+---
+
+## 3.5 Priors in the current independent-prior delta-only model
+
+The current working survival model uses priors of the form:
+
+- alpha_k ~ Normal(0, 2)
+- beta_j ~ Normal(0, 1)
+- delta_j ~ Normal(0, 0.5)
+- rho ~ Beta(0.5, 0.5)
+- tau ~ HalfNormal(1)
+- eps_a ~ Normal(0, 1)
+- structured spatial free coordinates ~ Normal(0, 1)
+
+The independent prior on `delta` is currently preferred to the more heavily smoothed or hierarchically constrained variants because it provided the best overall empirical balance during recovery studies.
+
+---
+
+## 4. Current active model choice and rationale
+
+Several survival model variants were explored.
+
+### 4.1 Explored variants
+
+These included:
+
+- survival-only nonspatial model
+- spatial model with `beta_td + delta_post`
+- spatial model with `treated_td` but no delta block
+- spatial model with no treatment-history terms
+- collapsed post-treatment interval models
+- spline-based post-treatment effect
+- delta-only model with iid hierarchical shrinkage
+- delta-only model with centered level/shape decomposition
+- delta-only model with first-order random-walk smoothing
+- delta-only model with second-order random-walk smoothing
+
+### 4.2 Current working choice
+
+The current recommended working model is:
+
+- spatial
+- delta-only
+- independent priors on `delta`
+
+Reason:
+
+- it gave the best overall compromise across:
+  - baseline coefficient recovery
+  - treatment-history recovery
+  - tumor-size stability
+  - sampler behavior
+
+### 4.3 Important empirical conclusion
+
+The development process showed that:
+
+- the original `beta_td + delta_post` split made the model less stable
+- the post-treatment block can compete with baseline prognostic effects
+- `log tumor size` is especially vulnerable to that competition
+- heavier smoothing or shrinkage can improve `log tumor size` recovery but often distorts the delta trajectory
+- the independent-prior delta-only model is therefore the best current practical choice
+
+This is an important modeling conclusion for future package development.
+
+---
+
+## 5. What the code is doing in the current active model
+
+This section explains the main logic of the current `survival_spatial_delta_only.py`.
+
+## 5.1 Inputs
+
+The model reads the following arrays from `model_data.py`:
+
+- `y_surv`
+- `log_exposure_surv`
+- `k_surv`
+- `k_post`
+- `treated_td`
+- `area_id_surv`
+- `X_surv`
+- `node1`
+- `node2`
+- `scaling_factor`
+- `A`
+
+These arrays define:
+
+- the survival likelihood
+- the post-treatment effect indexing
+- the spatial graph
+
+## 5.2 Baseline hazard
+
+The model samples a separate `alpha_k` for each survival interval.
+
+This is the baseline piecewise-exponential hazard structure.
+
+## 5.3 Baseline covariate effects
+
+The model samples a coefficient vector `beta` and applies it to `X_surv`.
+
+This captures baseline prognostic structure.
+
+## 5.4 Post-treatment effect
+
+The model samples `delta_post` as a vector of independent coefficients.
+
+The effect is applied only when `treated_td = 1`.
+
+Implementation logic:
+
+- untreated rows get no treatment-history contribution
+- treated rows use `delta_post[k_post]`
+
+This is the simplest working treatment-history representation found so far.
+
+## 5.5 Spatial frailty
+
+The model samples:
+
+- `rho`
+- `tau`
+- unstructured effect `eps`
+- structured effect free coordinates
+
+Then constructs:
+
+- structured sum-to-zero field
+- BYM2-style frailty `u`
+
+This is then indexed by `area_id_surv`.
+
+## 5.6 Likelihood
+
+The linear predictor is:
+
+alpha[k_surv] + X_surv beta + u[area_id_surv] + treated_td * delta_post[k_post]
+
+and the observed event counts are modeled as Poisson with rate:
+
+exp(log_exposure + linear predictor)
+
+---
+
+## 6. Summary of validation findings so far
+
+## 6.1 What has been validated successfully
+
+The following have been validated well:
+
+- preprocessing pipeline
+- graph construction
+- simulation logic
+- model-data assembly
+- execution of MCMC inference
+- spatial frailty recovery
+- recovery of most baseline survival coefficients
+- recovery of the qualitative post-treatment trajectory under the current delta-only form
+
+## 6.2 Main unresolved issue
+
+The main remaining issue is attenuation of the `log tumor size` coefficient in some model variants.
+
+Current understanding:
+
+- this is not mainly stage collinearity
+- this is not mainly spatial confounding
+- this is not mainly the separate `beta_td` term
+- it appears to arise from competition between:
+  - baseline tumor-size prognosis
+  - post-treatment hazard structure
+  - risk-set composition over post-treatment time
+
+This is likely at least partly a real weak-identification issue rather than a simple coding bug.
+
+## 6.3 Practical implication
+
+This does not invalidate the model for its main scientific use, which is trajectory-level comparison under different treatment timing scenarios.
+
+It mainly limits how literally one should interpret the isolated coefficient for tumor size.
+
+---
+
+## 7. How the current model answers the scientific question
+
+The main scientific use is not just coefficient recovery, but prediction of survival under different treatment timings.
+
+For a fixed individual with covariates `x` in area `a`, and a chosen treatment time `T`, the model defines a piecewise hazard trajectory.
+
+From this, one can compute:
+
+- survival curve under treatment at 30 days
+- survival curve under treatment at 60 days
+- difference in survival probability at clinically relevant horizons
+- difference in restricted mean survival time
+
+So the model is still appropriate for the core scientific aim of comparing survival under different treatment times, even if one baseline coefficient is somewhat attenuated.
+
+---
+
+## 8. Recommended current workflow
+
+The recommended workflow for development and applied use is:
+
+1. simulate data under known truth
+2. preprocess with `prep.py`
+3. assemble arrays with `model_data.py`
+4. fit the current active survival model
+5. evaluate:
+   - coefficient recovery
+   - treatment-history recovery
+   - spatial frailty recovery
+   - null calibration
+   - divergence diagnostics
+6. use posterior samples for counterfactual survival predictions
+7. then move to joint-model development
+
+---
+
+## 9. Current recommended active files
+
+### Keep as active
+
+- `seer_peph/data/prep.py`
+- `seer_peph/data/model_data.py`
+- `seer_peph/graphs.py`
+- `seer_peph/validation/simulate.py`
+- `seer_peph/inference/run.py`
+- `seer_peph/models/survival_spatial_delta_only.py`
+
+### Keep as archived comparators
+
+These should be preserved but clearly marked as nonprimary:
+
+- `survival_only`
+- `survival_spatial` with `beta_td + delta_post`
+- spline-based post-treatment variants
+- centered level/shape and RW variants if retained for sensitivity checks
+
+These are useful for methodological comparison and reproducibility, even if they are not the current default.
+
+---
+
+## 10. Roadmap for next development steps
+
+## 10.1 Immediate next step: lock the current survival component
+
+Before building the full joint model, finalize the current survival component.
+
+Tasks:
+
+- keep the plain delta-only independent-prior spatial survival model as the primary survival model
+- finish null-case validation
+- finalize a standard recovery script set
+- document the rationale for choosing this model over the explored alternatives
+
+Deliverable:
+
+- stable survival model interface and validation summary
+
+---
+
+## 10.2 Build posterior prediction utilities
+
+The next package-level feature should be posterior prediction utilities for counterfactual survival.
+
+Needed functionality:
+
+- compute individual survival curves under specified treatment times
+- compare treatment at 30 vs 60 days
+- compute survival difference at fixed horizons
+- compute restricted mean survival time difference
+- summarize uncertainty across posterior draws
+
+Deliverable:
+
+- prediction module for model-based counterfactual survival analysis
+
+This is directly tied to the scientific aims.
+
+---
+
+## 10.3 Implement the treatment-process model as a standalone module
+
+The package still needs a proper treatment-time model.
+
+Planned direction:
+
+- piecewise-exponential or related hazard model for treatment initiation time
+- baseline covariates
+- spatial frailty
+- compatibility with the current simulation and preprocessing structure
+
+Deliverable:
+
+- treatment-only model with its own recovery studies
+
+This should be validated before the full joint model is built.
+
+---
+
+## 10.4 Build the full joint treatment-survival model
+
+After treatment-only and survival-only components are stable, build the joint model.
+
+The intended coupling is through shared spatial frailty first, with possible future extensions.
+
+Planned ingredients:
+
+- treatment hazard model
+- survival hazard model
+- shared latent spatial structure
+- posterior sampling and prediction
+
+Deliverable:
+
+- first full joint model implementation
+
+This is the major next scientific milestone.
+
+---
+
+## 10.5 Add posterior diagnostic utilities
+
+The package should include reusable diagnostic tools rather than relying entirely on custom scripts.
+
+Needed diagnostics:
+
+- divergences
+- effective sample size
+- posterior correlation summaries
+- coefficient path comparison across model variants
+- null-case diagnostics
+- recovery summaries across seeds
+
+Deliverable:
+
+- package-level diagnostics module
+
+---
+
+## 10.6 Standardize validation scripts
+
+Current validation relies on many custom scripts. These should be standardized and retained.
+
+Recommended script families:
+
+- one-seed recovery
+- multiseed recovery
+- null multiseed recovery
+- tumor-size diagnostics
+- post-treatment interval composition diagnostics
+- posterior-correlation diagnostics
+
+Deliverable:
+
+- a standard validation suite with consistent output structure
+
+---
+
+## 10.7 Add prediction and reporting artifacts
+
+For applied analyses, the package should generate outputs that are immediately interpretable.
+
+Examples:
+
+- survival curves
+- treatment-time comparison plots
+- RMST difference summaries
+- area-level frailty maps
+- calibration figures
+- posterior interval tables
+
+Deliverable:
+
+- reporting utilities for methods development and real-data analysis
+
+---
+
+## 10.8 Prepare for real Georgia analysis
+
+Once the model is stable enough, move from simulation-only development to real-data readiness.
+
+Needed steps:
+
+- finalize preprocessing assumptions for SEER-Medicare CRC data
+- confirm graph mapping for Georgia geography
+- verify treatment-time variable construction
+- run model on a controlled real-data subset
+- inspect computational scaling
+
+Deliverable:
+
+- first real-data pilot analysis
+
+---
+
+## 10.9 Longer-run methodological extensions
+
+After the core package is stable, possible extensions include:
+
+- interaction between tumor size and treatment-history effect
+- richer treatment-history bases
+- alternative treatment-process hazard families
+- additional outcomes
+- more flexible shared latent structures
+- more causal framing if assumptions can be justified
+
+These are later-phase items, not immediate priorities.
+
+---
+
+## 11. Recommended project priorities right now
+
+The highest-priority sequence is:
+
+1. finalize and validate the current delta-only spatial survival model
+2. build posterior prediction utilities
+3. implement and validate the treatment-time model
+4. build the full joint model
+5. run real-data pilot analyses
+
+That ordering keeps development aligned with the scientific goals and avoids overinvesting in local refinements to a survival submodel that is already adequate for its main purpose.
+
+---
+
+## 12. Final summary
+
+The package has reached a stage where the survival component is substantially developed and validated.
+
+The current best working survival model is:
+
+- spatial
+- piecewise-exponential
+- delta-only treatment-history parameterization
+- independent priors on delta
+- BYM2 spatial frailty
+
+This model is not perfect, but it is the best overall compromise found so far.
+
+The main unresolved coefficient-level issue is attenuation of `log tumor size` in some variants, but this does not prevent the model from serving its main scientific purpose: comparing survival under alternative treatment timings.
+
+The next real milestone is no longer more local survival-model tuning. It is development of:
+
+- prediction utilities
+- treatment-process modeling
+- and the full joint treatment-survival model

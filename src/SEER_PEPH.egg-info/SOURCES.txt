@@ -7,5 +7,16 @@ src/SEER_PEPH.egg-info/top_level.txt
 src/seer_peph/__init__.py
 src/seer_peph/graphs.py
 src/seer_peph/data/__init__.py
+src/seer_peph/data/model_data.py
 src/seer_peph/data/prep.py
+src/seer_peph/inference/run.py
+src/seer_peph/models/survival_only.py
+src/seer_peph/models/survival_spatial.py
+src/seer_peph/models/survival_spatial_delta_only.py
+src/seer_peph/models/treatment_spatial_pe.py
 src/seer_peph/validation/simulate.py
+tests/test_graphs.py
+tests/test_model_data.py
+tests/test_prep.py
+tests/test_run_inference.py
+tests/test_simulate.py

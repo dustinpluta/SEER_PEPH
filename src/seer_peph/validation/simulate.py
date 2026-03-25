@@ -321,6 +321,8 @@ def _simulate_subject(
         rec[f"delta_post_{j}_true"] = float(val)
     for name, val in params.beta_surv.items():
         rec[f"beta_surv_{name}_true"] = float(val)
+    for j, val in enumerate(params.gamma_ttt):
+        rec[f"gamma_ttt_{j}_true"] = float(val)
     for name, val in params.theta_ttt.items():
         rec[f"theta_ttt_{name}_true"] = float(val)
 
