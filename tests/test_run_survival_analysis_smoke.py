@@ -5,12 +5,17 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from seer_peph.graphs import make_ring_lattice
-from seer_peph.validation.simulate import simulate_joint
-from scripts.run_survival_analysis import (
+from seer_peph.analysis.survival_analysis import (
     SurvivalAnalysisConfig,
     run_survival_analysis,
 )
+from seer_peph.data.prep import (
+    DEFAULT_POST_TTT_BREAKS,
+    DEFAULT_SURV_BREAKS,
+    DEFAULT_TTT_BREAKS,
+)
+from seer_peph.graphs import make_ring_lattice
+from seer_peph.validation.simulate import simulate_joint
 
 
 def _encode_like_prep(wide: pd.DataFrame) -> pd.DataFrame:
@@ -54,6 +59,9 @@ def test_run_survival_analysis_smoke(tmp_path: Path) -> None:
         graph_mode="from_area_id_ring",
         graph_A=6,
         graph_k=2,
+        surv_breaks=tuple(DEFAULT_SURV_BREAKS),
+        ttt_breaks=tuple(DEFAULT_TTT_BREAKS),
+        post_ttt_breaks=tuple(DEFAULT_POST_TTT_BREAKS),
         rng_seed=101,
         inference={
             "num_chains": 1,
@@ -170,3 +178,14 @@ def test_run_survival_analysis_smoke(tmp_path: Path) -> None:
     assert surv_scenarios["mean_survival"].between(0.0, 1.0).all()
     assert (rmst_scenarios["mean_rmst"] >= 0.0).all()
     assert (rmst_scenarios["mean_rmst"] <= rmst_scenarios["horizon_m"]).all()
+
+    analysis_cfg = pd.read_json(out_dir / "analysis_config.json", typ="series")
+    run_manifest = pd.read_json(out_dir / "run_manifest.json", typ="series")
+
+    assert "surv_breaks" in analysis_cfg.index
+    assert "ttt_breaks" in analysis_cfg.index
+    assert "post_ttt_breaks" in analysis_cfg.index
+
+    assert "surv_breaks" in run_manifest.index
+    assert "ttt_breaks" in run_manifest.index
+    assert "post_ttt_breaks" in run_manifest.index

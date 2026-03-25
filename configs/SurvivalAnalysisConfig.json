@@ -9,8 +9,11 @@
     "cci",
     "tumor_size_log",
     "stage_II",
-    "stage_III"
+    "stage_III"    
   ],
+  "surv_breaks": [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48, 60],
+  "ttt_breaks": [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 60],
+  "post_ttt_breaks": [0, 3, 6, 12, 24, 60],
   "rng_seed": 123,
   "inference": {
     "num_chains": 2,

@@ -8,8 +8,9 @@ from typing import Any, Sequence
 import pandas as pd
 
 from seer_peph.data.prep import (
-    POST_TTT_BREAKS,
-    SURV_BREAKS,
+    DEFAULT_POST_TTT_BREAKS,
+    DEFAULT_SURV_BREAKS,
+    DEFAULT_TTT_BREAKS,
     build_survival_long,
     build_treatment_long,
 )
@@ -18,10 +19,7 @@ from seer_peph.fitting.fit_models import fit_survival_model
 from seer_peph.fitting.io import save_survival_fit
 from seer_peph.graphs import make_ring_lattice
 from seer_peph.inference.run import InferenceConfig
-from seer_peph.predict.survival import (
-    predict_rmst,
-    predict_survival_at_times,
-)
+from seer_peph.predict.survival import predict_rmst, predict_survival_at_times
 from seer_peph.predict.survival_contrasts import (
     predict_rmst_contrast_summary,
     predict_survival_contrast_summary,
@@ -50,6 +48,11 @@ class SurvivalAnalysisConfig:
     graph_mode: str = "from_area_id_ring"
     graph_A: int | None = None
     graph_k: int = 4
+
+    # Interval grids
+    surv_breaks: tuple[float, ...] = tuple(DEFAULT_SURV_BREAKS)
+    ttt_breaks: tuple[float, ...] = tuple(DEFAULT_TTT_BREAKS)
+    post_ttt_breaks: tuple[float, ...] = tuple(DEFAULT_POST_TTT_BREAKS)
 
     # Survival covariates
     surv_x_cols: tuple[str, ...] = (
@@ -90,8 +93,15 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
     wide_encoded = _encode_like_prep(wide)
 
     graph = _build_graph(config, wide_encoded)
-    surv_long = build_survival_long(wide_encoded)
-    ttt_long = build_treatment_long(wide_encoded)
+    surv_long = build_survival_long(
+        wide_encoded,
+        surv_breaks=config.surv_breaks,
+        post_ttt_breaks=config.post_ttt_breaks,
+    )
+    ttt_long = build_treatment_long(
+        wide_encoded,
+        ttt_breaks=config.ttt_breaks,
+    )
 
     surv_long.to_csv(out_dir / "surv_long.csv", index=False)
     ttt_long.to_csv(out_dir / "ttt_long.csv", index=False)
@@ -103,8 +113,9 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
         ttt_long=ttt_long,
         graph=graph,
         surv_x_cols=list(config.surv_x_cols),
-        surv_breaks=list(SURV_BREAKS),
-        post_ttt_breaks=list(POST_TTT_BREAKS),
+        surv_breaks=list(config.surv_breaks),
+        ttt_breaks=list(config.ttt_breaks),
+        post_ttt_breaks=list(config.post_ttt_breaks),
         rng_seed=config.rng_seed,
         inference_config=infer_cfg,
         extra_fields=("diverging",),
@@ -130,8 +141,9 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
             "n_surv_rows": int(len(surv_long)),
             "n_ttt_rows": int(len(ttt_long)),
             "surv_x_cols": list(config.surv_x_cols),
-            "surv_breaks": list(SURV_BREAKS),
-            "post_ttt_breaks": list(POST_TTT_BREAKS),
+            "surv_breaks": list(config.surv_breaks),
+            "ttt_breaks": list(config.ttt_breaks),
+            "post_ttt_breaks": list(config.post_ttt_breaks),
             "rng_seed": config.rng_seed,
         },
     )
@@ -179,8 +191,8 @@ def _write_prediction_artifacts(
         fit,
         x=x,
         area_id=area_id,
-        surv_breaks=list(SURV_BREAKS),
-        post_treatment_breaks=list(POST_TTT_BREAKS),
+        surv_breaks=list(config.surv_breaks),
+        post_treatment_breaks=list(config.post_ttt_breaks),
         times=eval_times,
         treatment_times_m=treatment_times,
     )
@@ -190,8 +202,8 @@ def _write_prediction_artifacts(
         fit,
         x=x,
         area_id=area_id,
-        surv_breaks=list(SURV_BREAKS),
-        post_treatment_breaks=list(POST_TTT_BREAKS),
+        surv_breaks=list(config.surv_breaks),
+        post_treatment_breaks=list(config.post_ttt_breaks),
         horizon_m=float(config.prediction.horizon_m),
         treatment_times_m=treatment_times,
         grid_size=int(config.prediction.grid_size),
@@ -206,8 +218,8 @@ def _write_prediction_artifacts(
             fit,
             x=x,
             area_id=area_id,
-            surv_breaks=list(SURV_BREAKS),
-            post_treatment_breaks=list(POST_TTT_BREAKS),
+            surv_breaks=list(config.surv_breaks),
+            post_treatment_breaks=list(config.post_ttt_breaks),
             eval_times=eval_times,
             treatment_time_m_a=t_a,
             treatment_time_m_b=t_b,
@@ -218,8 +230,8 @@ def _write_prediction_artifacts(
             fit,
             x=x,
             area_id=area_id,
-            surv_breaks=list(SURV_BREAKS),
-            post_treatment_breaks=list(POST_TTT_BREAKS),
+            surv_breaks=list(config.surv_breaks),
+            post_treatment_breaks=list(config.post_ttt_breaks),
             horizon_m=float(config.prediction.horizon_m),
             treatment_time_m_a=t_a,
             treatment_time_m_b=t_b,
@@ -252,6 +264,8 @@ def _write_prediction_artifacts(
                 [_json_ready(a), _json_ready(b)]
                 for a, b in config.prediction.contrast_pairs_m
             ],
+            "surv_breaks": list(config.surv_breaks),
+            "post_ttt_breaks": list(config.post_ttt_breaks),
         },
     )
 

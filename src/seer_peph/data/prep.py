@@ -50,15 +50,20 @@ import pandas as pd
 DAYS_PER_MONTH: float = 365.25 / 12  # 30.4375 days per month
 
 # Survival grid: monthly resolution for year 1, quarterly/semi-annual thereafter.
-SURV_BREAKS: list[float] = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48, 60]
+DEFAULT_SURV_BREAKS: list[float] = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48, 60]
 
 # Treatment grid: concentrated in the first year post-diagnosis.
-TTT_BREAKS: list[float] = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 60]
+DEFAULT_TTT_BREAKS: list[float] = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 60]
 
 # Post-treatment piecewise effect grid (months since treatment onset).
 # Implements delta^post_k: acute (0-3), early (3-6), mid (6-12),
 # late (12-24), long-term (24-60).
-POST_TTT_BREAKS: list[float] = [0, 3, 6, 12, 24, 60]
+DEFAULT_POST_TTT_BREAKS: list[float] = [0, 3, 6, 12, 24, 60]
+
+# Temporary backward-compatible aliases.
+SURV_BREAKS = DEFAULT_SURV_BREAKS
+TTT_BREAKS = DEFAULT_TTT_BREAKS
+POST_TTT_BREAKS = DEFAULT_POST_TTT_BREAKS
 
 # Default covariates carried into every survival long row (area_id must be first).
 SURV_X_COLS: list[str] = [
@@ -86,6 +91,29 @@ TTT_X_COLS: list[str] = [
 
 
 # ── private interval helpers ───────────────────────────────────────────────────
+
+def _resolve_breaks(
+    breaks: Optional[Sequence[float]],
+    *,
+    default: Sequence[float],
+    name: str,
+    require_zero_start: bool = True,
+) -> List[float]:
+    arr = np.asarray(default if breaks is None else breaks, dtype=float)
+
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be one-dimensional")
+    if arr.size < 2:
+        raise ValueError(f"{name} must contain at least two values")
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{name} must contain only finite values")
+    if np.any(np.diff(arr) <= 0.0):
+        raise ValueError(f"{name} must be strictly increasing")
+    if require_zero_start and not np.isclose(arr[0], 0.0):
+        raise ValueError(f"{name} must start at 0")
+
+    return [float(v) for v in arr]
+
 
 def _interval_index(breaks: np.ndarray, t: float) -> int:
     """
@@ -230,10 +258,10 @@ def _expand(
     time_col: str,
     event_col: str,
     x_cols: List[str],
-    breaks: List[float],
+    breaks: Sequence[float],
     cut_times_col: Optional[str] = None,
     treatment_time_col: Optional[str] = None,
-    post_ttt_breaks: Optional[List[float]] = None,
+    post_ttt_breaks: Optional[Sequence[float]] = None,
 ) -> pd.DataFrame:
     """
     Core piecewise-exponential long-format expansion.
@@ -423,6 +451,8 @@ def build_survival_long(
     df: pd.DataFrame,
     *,
     x_cols: Optional[Sequence[str]] = None,
+    surv_breaks: Optional[Sequence[float]] = None,
+    post_ttt_breaks: Optional[Sequence[float]] = None,
 ) -> pd.DataFrame:
     """
     Expand survival data to long-format Poisson rows.
@@ -435,6 +465,12 @@ def build_survival_long(
         Optional covariate columns to propagate into every survival long row.
         If None, uses SURV_X_COLS. area_id is required and will be forced to
         the first position if omitted or misplaced.
+    surv_breaks
+        Survival interval breakpoints in months. If None, uses
+        DEFAULT_SURV_BREAKS.
+    post_ttt_breaks
+        Post-treatment interval breakpoints in months since treatment onset.
+        If None, uses DEFAULT_POST_TTT_BREAKS.
 
     Output columns
     --------------
@@ -451,15 +487,25 @@ def build_survival_long(
         default_x_cols=SURV_X_COLS,
         label="survival",
     )
+    resolved_surv_breaks = _resolve_breaks(
+        surv_breaks,
+        default=DEFAULT_SURV_BREAKS,
+        name="surv_breaks",
+    )
+    resolved_post_ttt_breaks = _resolve_breaks(
+        post_ttt_breaks,
+        default=DEFAULT_POST_TTT_BREAKS,
+        name="post_ttt_breaks",
+    )
     return _expand(
         df,
         id_col="id",
         time_col="time_m",
         event_col="event",
         x_cols=resolved_x_cols,
-        breaks=SURV_BREAKS,
+        breaks=resolved_surv_breaks,
         treatment_time_col="treatment_time_m",
-        post_ttt_breaks=POST_TTT_BREAKS,
+        post_ttt_breaks=resolved_post_ttt_breaks,
     )
 
 
@@ -467,6 +513,7 @@ def build_treatment_long(
     df: pd.DataFrame,
     *,
     x_cols: Optional[Sequence[str]] = None,
+    ttt_breaks: Optional[Sequence[float]] = None,
 ) -> pd.DataFrame:
     """
     Expand treatment timing data to long-format Poisson rows.
@@ -487,6 +534,9 @@ def build_treatment_long(
         Optional covariate columns to propagate into every treatment long row.
         If None, uses TTT_X_COLS. area_id is required and will be forced to
         the first position if omitted or misplaced.
+    ttt_breaks
+        Treatment interval breakpoints in months. If None, uses
+        DEFAULT_TTT_BREAKS.
 
     Output columns
     --------------
@@ -501,13 +551,18 @@ def build_treatment_long(
         default_x_cols=TTT_X_COLS,
         label="treatment",
     )
+    resolved_ttt_breaks = _resolve_breaks(
+        ttt_breaks,
+        default=DEFAULT_TTT_BREAKS,
+        name="ttt_breaks",
+    )
     return _expand(
         df,
         id_col="id",
         time_col="treatment_time_obs_m",
         event_col="treatment_event",
         x_cols=resolved_x_cols,
-        breaks=TTT_BREAKS,
+        breaks=resolved_ttt_breaks,
     )
 
 
@@ -550,11 +605,31 @@ def summarize(
     df: pd.DataFrame,
     surv_long: pd.DataFrame,
     ttt_long: pd.DataFrame,
+    *,
+    surv_breaks: Optional[Sequence[float]] = None,
+    ttt_breaks: Optional[Sequence[float]] = None,
+    post_ttt_breaks: Optional[Sequence[float]] = None,
 ) -> None:
     """Print a structured validation summary comparing wide and long formats."""
+    resolved_surv_breaks = _resolve_breaks(
+        surv_breaks,
+        default=DEFAULT_SURV_BREAKS,
+        name="surv_breaks",
+    )
+    resolved_ttt_breaks = _resolve_breaks(
+        ttt_breaks,
+        default=DEFAULT_TTT_BREAKS,
+        name="ttt_breaks",
+    )
+    resolved_post_ttt_breaks = _resolve_breaks(
+        post_ttt_breaks,
+        default=DEFAULT_POST_TTT_BREAKS,
+        name="post_ttt_breaks",
+    )
+
     sep = "─" * 62
-    K_surv = len(SURV_BREAKS) - 1
-    K_ttt = len(TTT_BREAKS) - 1
+    K_surv = len(resolved_surv_breaks) - 1
+    K_ttt = len(resolved_ttt_breaks) - 1
 
     print(sep)
     print("  WIDE DATA SUMMARY")
@@ -577,9 +652,7 @@ def summarize(
     print("  SURVIVAL LONG FORMAT")
     print(sep)
     n_se_long = surv_long["event"].sum()
-    print(
-        f"    Rows               : {len(surv_long):,}"
-    )
+    print(f"    Rows               : {len(surv_long):,}")
     print(
         f"    Events             : {n_se_long:,}  "
         f"{'✓' if n_se_long == n_se else '⚠'}  (wide: {n_se:,})"
@@ -595,7 +668,7 @@ def summarize(
     grp.insert(
         0,
         "interval(mo)",
-        [f"[{SURV_BREAKS[k]:.0f},{SURV_BREAKS[k + 1]:.0f})" for k in grp.index],
+        [f"[{resolved_surv_breaks[k]:.0f},{resolved_surv_breaks[k + 1]:.0f})" for k in grp.index],
     )
     print(grp.to_string())
 
@@ -609,7 +682,10 @@ def summarize(
         kpg.insert(
             0,
             "post-ttt interval",
-            [f"[{POST_TTT_BREAKS[k]:.0f},{POST_TTT_BREAKS[k + 1]:.0f})mo" for k in kpg.index],
+            [
+                f"[{resolved_post_ttt_breaks[k]:.0f},{resolved_post_ttt_breaks[k + 1]:.0f})mo"
+                for k in kpg.index
+            ],
         )
         print(kpg.to_string())
 
@@ -641,7 +717,7 @@ def summarize(
     grp_t.insert(
         0,
         "interval(mo)",
-        [f"[{TTT_BREAKS[k]:.0f},{TTT_BREAKS[k + 1]:.0f})" for k in grp_t.index],
+        [f"[{resolved_ttt_breaks[k]:.0f},{resolved_ttt_breaks[k + 1]:.0f})" for k in grp_t.index],
     )
     print(grp_t.to_string())
 
@@ -649,14 +725,20 @@ def summarize(
     print(sep)
     print("  EXPOSURE CONSISTENCY CHECKS")
     print(sep)
-    _check_exposure(surv_long, df, "time_m", float(SURV_BREAKS[-1]), "survival ")
-    _check_exposure(ttt_long, df, "treatment_time_obs_m", float(TTT_BREAKS[-1]), "treatment")
+    _check_exposure(surv_long, df, "time_m", float(resolved_surv_breaks[-1]), "survival ")
+    _check_exposure(ttt_long, df, "treatment_time_obs_m", float(resolved_ttt_breaks[-1]), "treatment")
     print(sep)
 
 
 # ── main entry point ───────────────────────────────────────────────────────────
 
-def main(path: str | Path = "joint_ttt_survival_dataset.csv") -> Dict[str, object]:
+def main(
+    path: str | Path = "joint_ttt_survival_dataset.csv",
+    *,
+    surv_breaks: Optional[Sequence[float]] = None,
+    ttt_breaks: Optional[Sequence[float]] = None,
+    post_ttt_breaks: Optional[Sequence[float]] = None,
+) -> Dict[str, object]:
     """
     Run the full data preparation pipeline.
 
@@ -667,20 +749,50 @@ def main(path: str | Path = "joint_ttt_survival_dataset.csv") -> Dict[str, objec
         "surv_long" : pd.DataFrame  — survival long-format Poisson rows
         "ttt_long"  : pd.DataFrame  — treatment long-format Poisson rows
         "area_map"  : pd.DataFrame  — area_id <-> zip mapping
-        "grids"     : dict          — SURV_BREAKS, TTT_BREAKS, POST_TTT_BREAKS
+        "grids"     : dict          — surv_breaks, ttt_breaks, post_ttt_breaks
     """
+    resolved_surv_breaks = _resolve_breaks(
+        surv_breaks,
+        default=DEFAULT_SURV_BREAKS,
+        name="surv_breaks",
+    )
+    resolved_ttt_breaks = _resolve_breaks(
+        ttt_breaks,
+        default=DEFAULT_TTT_BREAKS,
+        name="ttt_breaks",
+    )
+    resolved_post_ttt_breaks = _resolve_breaks(
+        post_ttt_breaks,
+        default=DEFAULT_POST_TTT_BREAKS,
+        name="post_ttt_breaks",
+    )
+
     print(f"\nLoading data from: {path}")
     df = load_and_encode(path)
     print(f"  {len(df):,} subjects, {df['area_id'].nunique()} areas")
 
     print("\nExpanding survival long format ...")
-    surv_long = build_survival_long(df)
+    surv_long = build_survival_long(
+        df,
+        surv_breaks=resolved_surv_breaks,
+        post_ttt_breaks=resolved_post_ttt_breaks,
+    )
 
     print("Expanding treatment long format ...")
-    ttt_long = build_treatment_long(df)
+    ttt_long = build_treatment_long(
+        df,
+        ttt_breaks=resolved_ttt_breaks,
+    )
 
     print()
-    summarize(df, surv_long, ttt_long)
+    summarize(
+        df,
+        surv_long,
+        ttt_long,
+        surv_breaks=resolved_surv_breaks,
+        ttt_breaks=resolved_ttt_breaks,
+        post_ttt_breaks=resolved_post_ttt_breaks,
+    )
 
     return {
         "wide": df,
@@ -688,9 +800,9 @@ def main(path: str | Path = "joint_ttt_survival_dataset.csv") -> Dict[str, objec
         "ttt_long": ttt_long,
         "area_map": build_area_map(df),
         "grids": {
-            "surv_breaks": SURV_BREAKS,
-            "ttt_breaks": TTT_BREAKS,
-            "post_ttt_breaks": POST_TTT_BREAKS,
+            "surv_breaks": resolved_surv_breaks,
+            "ttt_breaks": resolved_ttt_breaks,
+            "post_ttt_breaks": resolved_post_ttt_breaks,
         },
     }
 
