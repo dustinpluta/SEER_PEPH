@@ -9,6 +9,7 @@ from seer_peph.analysis.treatment_analysis import (
     DerivedColumnConfig,
     InputColumnConfig,
     TreatmentAnalysisConfig,
+    TreatmentPPCConfig,
     run_treatment_analysis,
 )
 from seer_peph.data.prep import (
@@ -118,6 +119,12 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
             "max_tree_depth": 6,
             "progress_bar": False,
         },
+        ppc=TreatmentPPCConfig(
+            enabled=True,
+            draw_indices=None,
+            sample_posterior_predictive=True,
+            random_seed=123,
+        ),
     )
 
     returned_out_dir = run_treatment_analysis(cfg)
@@ -132,6 +139,8 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
         "treatment_gamma_summary.csv",
         "treatment_spatial_field_summary.csv",
         "treatment_spatial_hyperparameter_summary.csv",
+        "treatment_ppc_interval_counts.csv",
+        "treatment_ppc_area_counts.csv",
         "analysis_config.json",
         "run_manifest.json",
     ]
@@ -163,6 +172,8 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
     gamma_summary = pd.read_csv(out_dir / "treatment_gamma_summary.csv")
     spatial_field = pd.read_csv(out_dir / "treatment_spatial_field_summary.csv")
     spatial_hyper = pd.read_csv(out_dir / "treatment_spatial_hyperparameter_summary.csv")
+    ppc_interval = pd.read_csv(out_dir / "treatment_ppc_interval_counts.csv")
+    ppc_area = pd.read_csv(out_dir / "treatment_ppc_area_counts.csv")
 
     assert not surv_long.empty
     assert not ttt_long.empty
@@ -170,12 +181,12 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
     assert not gamma_summary.empty
     assert not spatial_field.empty
     assert not spatial_hyper.empty
+    assert not ppc_interval.empty
+    assert not ppc_area.empty
 
-    # Canonical internal long-format schema should be present.
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(surv_long.columns)
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(ttt_long.columns)
 
-    # Configured treatment covariates should be preserved into long format.
     assert {
         "age_per10_centered",
         "cci",
@@ -191,6 +202,28 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
     assert {"parameter", "field", "area_id", "mean"}.issubset(spatial_field.columns)
     assert {"parameter", "param_group", "mean"}.issubset(spatial_hyper.columns)
 
+    assert {
+        "k",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(ppc_interval.columns)
+
+    assert {
+        "area_id",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(ppc_area.columns)
+
     analysis_cfg = pd.read_json(out_dir / "analysis_config.json", typ="series")
     run_manifest = pd.read_json(out_dir / "run_manifest.json", typ="series")
 
@@ -200,6 +233,7 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
     assert "ttt_breaks" in analysis_cfg.index
     assert "post_ttt_breaks" in analysis_cfg.index
     assert "ttt_x_cols" in analysis_cfg.index
+    assert "ppc" in analysis_cfg.index
 
     assert "input_columns" in run_manifest.index
     assert "derived_columns" in run_manifest.index
@@ -207,3 +241,4 @@ def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> 
     assert "ttt_breaks" in run_manifest.index
     assert "post_ttt_breaks" in run_manifest.index
     assert "ttt_x_cols" in run_manifest.index
+    assert "ppc_enabled" in run_manifest.index

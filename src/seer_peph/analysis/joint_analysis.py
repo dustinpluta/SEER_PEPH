@@ -15,6 +15,13 @@ from seer_peph.data.prep import (
     build_survival_long,
     build_treatment_long,
 )
+from seer_peph.diagnostics.joint_ppc import (
+    joint_survival_ppc_area_counts,
+    joint_survival_ppc_interval_by_treatment_counts,
+    joint_survival_ppc_interval_counts,
+    joint_treatment_ppc_area_counts,
+    joint_treatment_ppc_interval_counts,
+)
 from seer_peph.fitting.extract import (
     extract_joint_coupling,
     extract_spatial_fields,
@@ -49,6 +56,14 @@ class DerivedColumnConfig:
     sex_male_col: str = "sex_male"
     stage_ii_col: str = "stage_II"
     stage_iii_col: str = "stage_III"
+
+
+@dataclass(frozen=True)
+class JointPPCConfig:
+    enabled: bool = True
+    draw_indices: tuple[int, ...] | None = None
+    sample_posterior_predictive: bool = True
+    random_seed: int = 123
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,9 @@ class JointAnalysisConfig:
             "progress_bar": True,
         }
     )
+
+    # PPC
+    ppc: JointPPCConfig = field(default_factory=JointPPCConfig)
 
 
 def run_joint_analysis(config: JointAnalysisConfig) -> Path:
@@ -158,6 +176,7 @@ def run_joint_analysis(config: JointAnalysisConfig) -> Path:
     save_joint_fit(fit, fit_dir)
 
     _write_joint_extractions(fit, out_dir)
+    _write_ppc_artifacts(fit, surv_long, ttt_long, out_dir, config)
 
     _write_json(out_dir / "analysis_config.json", _json_ready(asdict(config)))
     _write_json(
@@ -175,6 +194,7 @@ def run_joint_analysis(config: JointAnalysisConfig) -> Path:
             "post_ttt_breaks": list(config.post_ttt_breaks),
             "input_columns": asdict(config.input_columns),
             "derived_columns": asdict(config.derived_columns),
+            "ppc_enabled": bool(config.ppc.enabled),
             "rng_seed": config.rng_seed,
         },
     )
@@ -217,6 +237,67 @@ def _write_joint_extractions(fit, out_dir: Path) -> None:
             out_dir / "joint_field_correlations_summary.csv",
             index=False,
         )
+
+
+def _write_ppc_artifacts(
+    fit,
+    surv_long: pd.DataFrame,
+    ttt_long: pd.DataFrame,
+    out_dir: Path,
+    config: JointAnalysisConfig,
+) -> None:
+    if not config.ppc.enabled:
+        return
+
+    draw_indices = None if config.ppc.draw_indices is None else list(config.ppc.draw_indices)
+
+    surv_interval = joint_survival_ppc_interval_counts(
+        fit,
+        surv_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    surv_interval.to_csv(out_dir / "joint_survival_ppc_interval_counts.csv", index=False)
+
+    surv_area = joint_survival_ppc_area_counts(
+        fit,
+        surv_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    surv_area.to_csv(out_dir / "joint_survival_ppc_area_counts.csv", index=False)
+
+    surv_interval_treated = joint_survival_ppc_interval_by_treatment_counts(
+        fit,
+        surv_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    surv_interval_treated.to_csv(
+        out_dir / "joint_survival_ppc_interval_by_treatment_counts.csv",
+        index=False,
+    )
+
+    ttt_interval = joint_treatment_ppc_interval_counts(
+        fit,
+        ttt_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    ttt_interval.to_csv(out_dir / "joint_treatment_ppc_interval_counts.csv", index=False)
+
+    ttt_area = joint_treatment_ppc_area_counts(
+        fit,
+        ttt_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    ttt_area.to_csv(out_dir / "joint_treatment_ppc_area_counts.csv", index=False)
 
 
 def _build_graph(config: JointAnalysisConfig, wide_encoded: pd.DataFrame):

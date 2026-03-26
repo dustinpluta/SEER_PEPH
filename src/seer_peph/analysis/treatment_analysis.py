@@ -15,6 +15,10 @@ from seer_peph.data.prep import (
     build_survival_long,
     build_treatment_long,
 )
+from seer_peph.diagnostics.treatment_ppc import (
+    treatment_ppc_area_counts,
+    treatment_ppc_interval_counts,
+)
 from seer_peph.fitting.extract import extract_spatial_fields, extract_treatment_effects
 from seer_peph.fitting.fit_models import fit_treatment_model
 from seer_peph.fitting.io import save_treatment_fit
@@ -44,6 +48,14 @@ class DerivedColumnConfig:
     sex_male_col: str = "sex_male"
     stage_ii_col: str = "stage_II"
     stage_iii_col: str = "stage_III"
+
+
+@dataclass(frozen=True)
+class TreatmentPPCConfig:
+    enabled: bool = True
+    draw_indices: tuple[int, ...] | None = None
+    sample_posterior_predictive: bool = True
+    random_seed: int = 123
 
 
 @dataclass(frozen=True)
@@ -89,6 +101,9 @@ class TreatmentAnalysisConfig:
             "progress_bar": True,
         }
     )
+
+    # PPC
+    ppc: TreatmentPPCConfig = field(default_factory=TreatmentPPCConfig)
 
 
 def run_treatment_analysis(config: TreatmentAnalysisConfig) -> Path:
@@ -145,6 +160,7 @@ def run_treatment_analysis(config: TreatmentAnalysisConfig) -> Path:
     save_treatment_fit(fit, fit_dir)
 
     _write_treatment_extractions(fit, out_dir)
+    _write_ppc_artifacts(fit, ttt_long, out_dir, config)
 
     _write_json(out_dir / "analysis_config.json", _json_ready(asdict(config)))
     _write_json(
@@ -161,6 +177,7 @@ def run_treatment_analysis(config: TreatmentAnalysisConfig) -> Path:
             "post_ttt_breaks": list(config.post_ttt_breaks),
             "input_columns": asdict(config.input_columns),
             "derived_columns": asdict(config.derived_columns),
+            "ppc_enabled": bool(config.ppc.enabled),
             "rng_seed": config.rng_seed,
         },
     )
@@ -184,6 +201,36 @@ def _write_treatment_extractions(fit, out_dir: Path) -> None:
             out_dir / "treatment_spatial_hyperparameter_summary.csv",
             index=False,
         )
+
+
+def _write_ppc_artifacts(
+    fit,
+    ttt_long: pd.DataFrame,
+    out_dir: Path,
+    config: TreatmentAnalysisConfig,
+) -> None:
+    if not config.ppc.enabled:
+        return
+
+    draw_indices = None if config.ppc.draw_indices is None else list(config.ppc.draw_indices)
+
+    interval_counts = treatment_ppc_interval_counts(
+        fit,
+        ttt_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    interval_counts.to_csv(out_dir / "treatment_ppc_interval_counts.csv", index=False)
+
+    area_counts = treatment_ppc_area_counts(
+        fit,
+        ttt_long,
+        draw_indices=draw_indices,
+        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
+        random_seed=int(config.ppc.random_seed),
+    )
+    area_counts.to_csv(out_dir / "treatment_ppc_area_counts.csv", index=False)
 
 
 def _build_graph(config: TreatmentAnalysisConfig, wide_encoded: pd.DataFrame):

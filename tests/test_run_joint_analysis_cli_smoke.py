@@ -117,6 +117,12 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
             "dense_mass": False,
             "max_tree_depth": 6,
             "progress_bar": False
+        },
+        "ppc": {
+            "enabled": True,
+            "draw_indices": None,
+            "sample_posterior_predictive": True,
+            "random_seed": 123
         }
     }
 
@@ -161,6 +167,11 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
         "joint_spatial_hyperparameter_summary.csv",
         "joint_coupling_summary.csv",
         "joint_field_correlations_summary.csv",
+        "joint_survival_ppc_interval_counts.csv",
+        "joint_survival_ppc_area_counts.csv",
+        "joint_survival_ppc_interval_by_treatment_counts.csv",
+        "joint_treatment_ppc_interval_counts.csv",
+        "joint_treatment_ppc_area_counts.csv",
         "analysis_config.json",
         "run_manifest.json",
     ]
@@ -185,6 +196,13 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
     ttt_gamma = pd.read_csv(out_dir / "joint_treatment_gamma_summary.csv")
     coupling = pd.read_csv(out_dir / "joint_coupling_summary.csv")
     field_corr = pd.read_csv(out_dir / "joint_field_correlations_summary.csv")
+    surv_ppc_interval = pd.read_csv(out_dir / "joint_survival_ppc_interval_counts.csv")
+    surv_ppc_area = pd.read_csv(out_dir / "joint_survival_ppc_area_counts.csv")
+    surv_ppc_interval_treated = pd.read_csv(
+        out_dir / "joint_survival_ppc_interval_by_treatment_counts.csv"
+    )
+    ttt_ppc_interval = pd.read_csv(out_dir / "joint_treatment_ppc_interval_counts.csv")
+    ttt_ppc_area = pd.read_csv(out_dir / "joint_treatment_ppc_area_counts.csv")
 
     assert not surv_long.empty
     assert not ttt_long.empty
@@ -195,10 +213,14 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
     assert not ttt_gamma.empty
     assert not coupling.empty
     assert not field_corr.empty
+    assert not surv_ppc_interval.empty
+    assert not surv_ppc_area.empty
+    assert not surv_ppc_interval_treated.empty
+    assert not ttt_ppc_interval.empty
+    assert not ttt_ppc_area.empty
 
     input_df = pd.read_csv(input_path)
 
-    # Raw/custom-schema input should keep configured external names.
     assert {
         "patient_id",
         "os_days",
@@ -215,11 +237,9 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
         "county_area",
     }.issubset(input_df.columns)
 
-    # Long-format outputs should use canonical internal names.
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(surv_long.columns)
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(ttt_long.columns)
 
-    # Configured modeled covariates should be present.
     assert {
         "age_per10_centered",
         "cci",
@@ -246,6 +266,62 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
     assert {"parameter", "param_group", "mean"}.issubset(coupling.columns)
     assert {"metric", "value"}.issubset(field_corr.columns)
 
+    assert {
+        "k",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(surv_ppc_interval.columns)
+
+    assert {
+        "area_id",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(surv_ppc_area.columns)
+
+    assert {
+        "k",
+        "treated_td",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(surv_ppc_interval_treated.columns)
+
+    assert {
+        "k",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(ttt_ppc_interval.columns)
+
+    assert {
+        "area_id",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(ttt_ppc_area.columns)
+
     with (out_dir / "analysis_config.json").open("r", encoding="utf-8") as f:
         analysis_cfg = json.load(f)
     with (out_dir / "run_manifest.json").open("r", encoding="utf-8") as f:
@@ -255,6 +331,7 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
     assert analysis_cfg["derived_columns"]["area_id_col"] == "county_area"
     assert tuple(analysis_cfg["surv_breaks"]) == (0.0, 2.0, 4.0, 8.0, 16.0, 60.0)
     assert tuple(analysis_cfg["ttt_breaks"]) == (0.0, 1.0, 3.0, 6.0, 12.0, 60.0)
+    assert analysis_cfg["ppc"]["enabled"] is True
 
     assert tuple(manifest["surv_x_cols"]) == (
         "age_per10_centered",
@@ -272,3 +349,4 @@ def test_run_joint_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
         "stage_two",
         "stage_three",
     )
+    assert manifest["ppc_enabled"] is True

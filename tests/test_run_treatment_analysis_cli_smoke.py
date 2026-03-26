@@ -110,6 +110,12 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
             "dense_mass": False,
             "max_tree_depth": 6,
             "progress_bar": False
+        },
+        "ppc": {
+            "enabled": True,
+            "draw_indices": None,
+            "sample_posterior_predictive": True,
+            "random_seed": 123
         }
     }
 
@@ -145,6 +151,8 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
         "treatment_gamma_summary.csv",
         "treatment_spatial_field_summary.csv",
         "treatment_spatial_hyperparameter_summary.csv",
+        "treatment_ppc_interval_counts.csv",
+        "treatment_ppc_area_counts.csv",
         "analysis_config.json",
         "run_manifest.json",
     ]
@@ -164,15 +172,18 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
     ttt_long = pd.read_csv(out_dir / "ttt_long.csv")
     theta_summary = pd.read_csv(out_dir / "treatment_theta_summary.csv")
     gamma_summary = pd.read_csv(out_dir / "treatment_gamma_summary.csv")
+    ppc_interval = pd.read_csv(out_dir / "treatment_ppc_interval_counts.csv")
+    ppc_area = pd.read_csv(out_dir / "treatment_ppc_area_counts.csv")
 
     assert not surv_long.empty
     assert not ttt_long.empty
     assert not theta_summary.empty
     assert not gamma_summary.empty
+    assert not ppc_interval.empty
+    assert not ppc_area.empty
 
     input_df = pd.read_csv(input_path)
 
-    # Raw/custom-schema input should keep configured external names.
     assert {
         "patient_id",
         "os_days",
@@ -189,11 +200,9 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
         "county_area",
     }.issubset(input_df.columns)
 
-    # Long-format outputs should use canonical internal names.
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(surv_long.columns)
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(ttt_long.columns)
 
-    # Configured modeled treatment covariates should be present.
     assert {
         "age_per10_centered",
         "cci",
@@ -207,6 +216,28 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
     assert {"parameter", "label", "mean"}.issubset(theta_summary.columns)
     assert {"parameter", "label", "mean"}.issubset(gamma_summary.columns)
 
+    assert {
+        "k",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(ppc_interval.columns)
+
+    assert {
+        "area_id",
+        "observed_events",
+        "observed_exposure",
+        "pp_mean_events",
+        "pp_q05_events",
+        "pp_q95_events",
+        "observed_rate",
+        "pp_mean_rate",
+    }.issubset(ppc_area.columns)
+
     with (out_dir / "analysis_config.json").open("r", encoding="utf-8") as f:
         analysis_cfg = json.load(f)
     with (out_dir / "run_manifest.json").open("r", encoding="utf-8") as f:
@@ -215,6 +246,8 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
     assert analysis_cfg["input_columns"]["id_col"] == "patient_id"
     assert analysis_cfg["derived_columns"]["area_id_col"] == "county_area"
     assert tuple(analysis_cfg["ttt_breaks"]) == (0.0, 1.0, 3.0, 6.0, 12.0, 60.0)
+    assert analysis_cfg["ppc"]["enabled"] is True
+
     assert tuple(manifest["ttt_x_cols"]) == (
         "age_per10_centered",
         "cci",
@@ -224,3 +257,4 @@ def test_run_treatment_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> N
         "stage_two",
         "stage_three",
     )
+    assert manifest["ppc_enabled"] is True
