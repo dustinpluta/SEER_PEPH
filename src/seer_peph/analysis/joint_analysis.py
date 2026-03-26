@@ -15,21 +15,16 @@ from seer_peph.data.prep import (
     build_survival_long,
     build_treatment_long,
 )
-from seer_peph.diagnostics.survival_ppc import (
-    survival_ppc_area_counts,
-    survival_ppc_interval_by_treatment_counts,
-    survival_ppc_interval_counts,
+from seer_peph.fitting.extract import (
+    extract_joint_coupling,
+    extract_spatial_fields,
+    extract_survival_effects,
+    extract_treatment_effects,
 )
-from seer_peph.fitting.extract import extract_spatial_fields, extract_survival_effects
-from seer_peph.fitting.fit_models import fit_survival_model
-from seer_peph.fitting.io import save_survival_fit
+from seer_peph.fitting.fit_models import fit_joint_model
+from seer_peph.fitting.io import save_joint_fit
 from seer_peph.graphs import make_ring_lattice
 from seer_peph.inference.run import InferenceConfig
-from seer_peph.predict.survival import predict_rmst, predict_survival_at_times
-from seer_peph.predict.survival_contrasts import (
-    predict_rmst_contrast_summary,
-    predict_survival_contrast_summary,
-)
 
 
 @dataclass(frozen=True)
@@ -57,42 +52,25 @@ class DerivedColumnConfig:
 
 
 @dataclass(frozen=True)
-class SurvivalPredictionConfig:
-    eval_times_m: tuple[float, ...] = (12.0, 24.0, 36.0, 60.0)
-    horizon_m: float = 60.0
-    grid_size: int = 400
-    treatment_times_m: tuple[float | None, ...] = (None, 1.0, 3.0, 6.0)
-    contrast_pairs_m: tuple[tuple[float | None, float | None], ...] = (
-        (1.0, 3.0),
-        (3.0, 6.0),
-        (1.0, 6.0),
-    )
-
-
-@dataclass(frozen=True)
-class SurvivalPPCConfig:
-    enabled: bool = True
-    draw_indices: tuple[int, ...] | None = None
-    sample_posterior_predictive: bool = True
-    random_seed: int = 123
-
-
-@dataclass(frozen=True)
-class SurvivalAnalysisConfig:
+class JointAnalysisConfig:
     input_path: str
-    out_dir: str = "artifacts/standalone_survival_analysis"
+    out_dir: str = "artifacts/joint_analysis"
 
+    # Graph settings
     graph_mode: str = "from_area_id_ring"
     graph_A: int | None = None
     graph_k: int = 4
 
+    # Column schema
     input_columns: InputColumnConfig = field(default_factory=InputColumnConfig)
     derived_columns: DerivedColumnConfig = field(default_factory=DerivedColumnConfig)
 
+    # Interval grids
     surv_breaks: tuple[float, ...] = tuple(DEFAULT_SURV_BREAKS)
     ttt_breaks: tuple[float, ...] = tuple(DEFAULT_TTT_BREAKS)
     post_ttt_breaks: tuple[float, ...] = tuple(DEFAULT_POST_TTT_BREAKS)
 
+    # Model covariates (post-encoding names, before canonicalization)
     surv_x_cols: tuple[str, ...] = (
         "age_per10_centered",
         "cci",
@@ -100,7 +78,17 @@ class SurvivalAnalysisConfig:
         "stage_II",
         "stage_III",
     )
+    ttt_x_cols: tuple[str, ...] = (
+        "age_per10_centered",
+        "cci",
+        "tumor_size_log",
+        "ses",
+        "sex_male",
+        "stage_II",
+        "stage_III",
+    )
 
+    # Inference
     rng_seed: int = 123
     inference: dict[str, Any] = field(
         default_factory=lambda: {
@@ -114,14 +102,8 @@ class SurvivalAnalysisConfig:
         }
     )
 
-    prediction: SurvivalPredictionConfig = field(default_factory=SurvivalPredictionConfig)
-    ppc: SurvivalPPCConfig = field(default_factory=SurvivalPPCConfig)
 
-    prediction_profile: str = "first_row"
-    prediction_area_id: int | None = None
-
-
-def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
+def run_joint_analysis(config: JointAnalysisConfig) -> Path:
     out_dir = Path(config.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +112,7 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
         wide,
         input_cols=config.input_columns,
         derived_cols=config.derived_columns,
-        surv_x_cols=config.surv_x_cols,
+        required_covariates=tuple(sorted(set(config.surv_x_cols) | set(config.ttt_x_cols))),
     )
 
     graph = _build_graph(config, wide_encoded)
@@ -143,7 +125,7 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
     )
     ttt_long = build_treatment_long(
         wide_encoded,
-        x_cols=list(config.surv_x_cols),
+        x_cols=list(config.ttt_x_cols),
         ttt_breaks=config.ttt_breaks,
     )
 
@@ -152,11 +134,12 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
 
     infer_cfg = InferenceConfig(**config.inference)
 
-    fit = fit_survival_model(
+    fit = fit_joint_model(
         surv_long=surv_long,
         ttt_long=ttt_long,
         graph=graph,
         surv_x_cols=list(config.surv_x_cols),
+        ttt_x_cols=list(config.ttt_x_cols),
         surv_breaks=list(config.surv_breaks),
         ttt_breaks=list(config.ttt_breaks),
         post_ttt_breaks=list(config.post_ttt_breaks),
@@ -172,11 +155,9 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
     )
 
     fit_dir = out_dir / "fit_bundle"
-    save_survival_fit(fit, fit_dir)
+    save_joint_fit(fit, fit_dir)
 
-    _write_survival_extractions(fit, out_dir)
-    _write_prediction_artifacts(fit, wide_encoded, out_dir, config)
-    _write_ppc_artifacts(fit, surv_long, out_dir, config)
+    _write_joint_extractions(fit, out_dir)
 
     _write_json(out_dir / "analysis_config.json", _json_ready(asdict(config)))
     _write_json(
@@ -188,12 +169,12 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
             "n_surv_rows": int(len(surv_long)),
             "n_ttt_rows": int(len(ttt_long)),
             "surv_x_cols": list(config.surv_x_cols),
+            "ttt_x_cols": list(config.ttt_x_cols),
             "surv_breaks": list(config.surv_breaks),
             "ttt_breaks": list(config.ttt_breaks),
             "post_ttt_breaks": list(config.post_ttt_breaks),
             "input_columns": asdict(config.input_columns),
             "derived_columns": asdict(config.derived_columns),
-            "ppc_enabled": bool(config.ppc.enabled),
             "rng_seed": config.rng_seed,
         },
     )
@@ -201,195 +182,44 @@ def run_survival_analysis(config: SurvivalAnalysisConfig) -> Path:
     return out_dir
 
 
-def _write_survival_extractions(fit, out_dir: Path) -> None:
+def _write_joint_extractions(fit, out_dir: Path) -> None:
     surv = extract_survival_effects(fit, include_draws=False)
+    ttt = extract_treatment_effects(fit, include_draws=False)
     spatial = extract_spatial_fields(fit, include_draws=False)
+    coupling = extract_joint_coupling(fit, include_draws=False)
 
     if "beta" in surv:
-        surv["beta"].to_csv(out_dir / "survival_beta_summary.csv", index=False)
+        surv["beta"].to_csv(out_dir / "joint_survival_beta_summary.csv", index=False)
     if "alpha" in surv:
-        surv["alpha"].to_csv(out_dir / "survival_alpha_summary.csv", index=False)
+        surv["alpha"].to_csv(out_dir / "joint_survival_alpha_summary.csv", index=False)
     if "delta_post" in surv:
-        surv["delta_post"].to_csv(out_dir / "survival_delta_post_summary.csv", index=False)
+        surv["delta_post"].to_csv(out_dir / "joint_survival_delta_post_summary.csv", index=False)
 
-    if "field" in spatial:
-        spatial["field"].to_csv(out_dir / "survival_spatial_field_summary.csv", index=False)
+    if "theta" in ttt:
+        ttt["theta"].to_csv(out_dir / "joint_treatment_theta_summary.csv", index=False)
+    if "gamma" in ttt:
+        ttt["gamma"].to_csv(out_dir / "joint_treatment_gamma_summary.csv", index=False)
+
+    for name in ["u_surv", "u_ttt", "u_ttt_ind", "s_surv", "s_ttt"]:
+        if name in spatial:
+            spatial[name].to_csv(out_dir / f"{name}_summary.csv", index=False)
+
     if "hyperparameters" in spatial:
         spatial["hyperparameters"].to_csv(
-            out_dir / "survival_spatial_hyperparameter_summary.csv",
+            out_dir / "joint_spatial_hyperparameter_summary.csv",
+            index=False,
+        )
+
+    if "coupling" in coupling:
+        coupling["coupling"].to_csv(out_dir / "joint_coupling_summary.csv", index=False)
+    if "field_correlations" in coupling:
+        coupling["field_correlations"].to_csv(
+            out_dir / "joint_field_correlations_summary.csv",
             index=False,
         )
 
 
-def _write_prediction_artifacts(
-    fit,
-    wide_encoded: pd.DataFrame,
-    out_dir: Path,
-    config: SurvivalAnalysisConfig,
-) -> None:
-    x, area_id = _select_prediction_profile(
-        wide_encoded=wide_encoded,
-        surv_x_cols=config.surv_x_cols,
-        prediction_profile=config.prediction_profile,
-        prediction_area_id=config.prediction_area_id,
-        area_id_col="area_id",
-    )
-
-    eval_times = list(config.prediction.eval_times_m)
-    treatment_times = list(config.prediction.treatment_times_m)
-
-    scenario_survival = predict_survival_at_times(
-        fit,
-        x=x,
-        area_id=area_id,
-        surv_breaks=list(config.surv_breaks),
-        post_treatment_breaks=list(config.post_ttt_breaks),
-        times=eval_times,
-        treatment_times_m=treatment_times,
-    )
-    scenario_survival.to_csv(out_dir / "predicted_survival_scenarios.csv", index=False)
-
-    scenario_rmst = predict_rmst(
-        fit,
-        x=x,
-        area_id=area_id,
-        surv_breaks=list(config.surv_breaks),
-        post_treatment_breaks=list(config.post_ttt_breaks),
-        horizon_m=float(config.prediction.horizon_m),
-        treatment_times_m=treatment_times,
-        grid_size=int(config.prediction.grid_size),
-    )
-    scenario_rmst.to_csv(out_dir / "predicted_rmst_scenarios.csv", index=False)
-
-    contrast_survival_parts: list[pd.DataFrame] = []
-    contrast_rmst_parts: list[pd.DataFrame] = []
-
-    for t_a, t_b in config.prediction.contrast_pairs_m:
-        surv_contrast = predict_survival_contrast_summary(
-            fit,
-            x=x,
-            area_id=area_id,
-            surv_breaks=list(config.surv_breaks),
-            post_treatment_breaks=list(config.post_ttt_breaks),
-            eval_times=eval_times,
-            treatment_time_m_a=t_a,
-            treatment_time_m_b=t_b,
-        )
-        contrast_survival_parts.append(surv_contrast)
-
-        rmst_contrast = predict_rmst_contrast_summary(
-            fit,
-            x=x,
-            area_id=area_id,
-            surv_breaks=list(config.surv_breaks),
-            post_treatment_breaks=list(config.post_ttt_breaks),
-            horizon_m=float(config.prediction.horizon_m),
-            treatment_time_m_a=t_a,
-            treatment_time_m_b=t_b,
-            grid_size=int(config.prediction.grid_size),
-        )
-        contrast_rmst_parts.append(rmst_contrast)
-
-    if contrast_survival_parts:
-        pd.concat(contrast_survival_parts, ignore_index=True).to_csv(
-            out_dir / "predicted_survival_contrasts.csv",
-            index=False,
-        )
-
-    if contrast_rmst_parts:
-        pd.concat(contrast_rmst_parts, ignore_index=True).to_csv(
-            out_dir / "predicted_rmst_contrasts.csv",
-            index=False,
-        )
-
-    _write_json(
-        out_dir / "prediction_profile.json",
-        {
-            "area_id": int(area_id),
-            "surv_x_cols": list(config.surv_x_cols),
-            "x": [float(v) for v in x],
-            "eval_times_m": eval_times,
-            "horizon_m": float(config.prediction.horizon_m),
-            "treatment_times_m": [_json_ready(v) for v in treatment_times],
-            "contrast_pairs_m": [
-                [_json_ready(a), _json_ready(b)]
-                for a, b in config.prediction.contrast_pairs_m
-            ],
-            "surv_breaks": list(config.surv_breaks),
-            "post_ttt_breaks": list(config.post_ttt_breaks),
-        },
-    )
-
-
-def _write_ppc_artifacts(
-    fit,
-    surv_long: pd.DataFrame,
-    out_dir: Path,
-    config: SurvivalAnalysisConfig,
-) -> None:
-    if not config.ppc.enabled:
-        return
-
-    draw_indices = None if config.ppc.draw_indices is None else list(config.ppc.draw_indices)
-
-    interval_counts = survival_ppc_interval_counts(
-        fit,
-        surv_long,
-        draw_indices=draw_indices,
-        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
-        random_seed=int(config.ppc.random_seed),
-    )
-    interval_counts.to_csv(out_dir / "survival_ppc_interval_counts.csv", index=False)
-
-    area_counts = survival_ppc_area_counts(
-        fit,
-        surv_long,
-        draw_indices=draw_indices,
-        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
-        random_seed=int(config.ppc.random_seed),
-    )
-    area_counts.to_csv(out_dir / "survival_ppc_area_counts.csv", index=False)
-
-    interval_treated_counts = survival_ppc_interval_by_treatment_counts(
-        fit,
-        surv_long,
-        draw_indices=draw_indices,
-        sample_posterior_predictive=bool(config.ppc.sample_posterior_predictive),
-        random_seed=int(config.ppc.random_seed),
-    )
-    interval_treated_counts.to_csv(
-        out_dir / "survival_ppc_interval_by_treatment_counts.csv",
-        index=False,
-    )
-
-
-def _select_prediction_profile(
-    *,
-    wide_encoded: pd.DataFrame,
-    surv_x_cols: Sequence[str],
-    prediction_profile: str,
-    prediction_area_id: int | None,
-    area_id_col: str,
-) -> tuple[list[float], int]:
-    if prediction_profile == "first_row":
-        row = wide_encoded.iloc[0]
-    elif prediction_profile == "mean_profile":
-        numeric = wide_encoded[list(surv_x_cols) + [area_id_col]].copy()
-        row = numeric.mean(numeric_only=True)
-    else:
-        raise ValueError(f"Unsupported prediction_profile: {prediction_profile}")
-
-    x = [float(row[col]) for col in surv_x_cols]
-
-    if prediction_area_id is not None:
-        area_id = int(prediction_area_id)
-    else:
-        area_id = int(row[area_id_col])
-
-    return x, area_id
-
-
-def _build_graph(config: SurvivalAnalysisConfig, wide_encoded: pd.DataFrame):
+def _build_graph(config: JointAnalysisConfig, wide_encoded: pd.DataFrame):
     if config.graph_mode != "from_area_id_ring":
         raise ValueError(f"Unsupported graph_mode: {config.graph_mode}")
 
@@ -422,7 +252,7 @@ def _encode_like_prep(
     *,
     input_cols: InputColumnConfig,
     derived_cols: DerivedColumnConfig,
-    surv_x_cols: Sequence[str],
+    required_covariates: Sequence[str],
 ) -> pd.DataFrame:
     """
     Convert configurable raw-schema wide data into the canonical internal schema
@@ -441,7 +271,7 @@ def _encode_like_prep(
       - treatment_event
       - area_id
 
-    plus any modeled covariates named in surv_x_cols.
+    plus any modeled covariates named in required_covariates.
     """
     df = wide.copy()
 
@@ -491,7 +321,7 @@ def _encode_like_prep(
         derived_cols.treatment_time_obs_m_col,
         input_cols.treatment_event_col,
         derived_cols.area_id_col,
-        *list(surv_x_cols),
+        *list(required_covariates),
     ]
     missing = [c for c in required_before_rename if c not in df.columns]
     if missing:
@@ -516,13 +346,11 @@ def _encode_like_prep(
         "treatment_time_obs_m",
         "treatment_event",
         "area_id",
-        *list(surv_x_cols),
+        *list(required_covariates),
     ]
     missing_after = [c for c in required_after_rename if c not in df.columns]
     if missing_after:
-        raise ValueError(
-            f"Canonicalized data missing required columns: {missing_after}"
-        )
+        raise ValueError(f"Canonicalized data missing required columns: {missing_after}")
 
     return df
 

@@ -5,13 +5,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from seer_peph.analysis.survival_analysis import (
+from seer_peph.analysis.treatment_analysis import (
     DerivedColumnConfig,
     InputColumnConfig,
-    SurvivalAnalysisConfig,
-    SurvivalPPCConfig,
-    SurvivalPredictionConfig,
-    run_survival_analysis,
+    TreatmentAnalysisConfig,
+    run_treatment_analysis,
 )
 from seer_peph.data.prep import (
     DEFAULT_POST_TTT_BREAKS,
@@ -96,64 +94,11 @@ def _parse_derived_columns(obj: Any) -> DerivedColumnConfig:
     )
 
 
-def _parse_prediction_config(obj: Any) -> SurvivalPredictionConfig:
-    default_cfg = SurvivalPredictionConfig()
-
-    if obj is None:
-        return default_cfg
-    if not isinstance(obj, dict):
-        raise ValueError("prediction must be a JSON object.")
-
-    eval_times_m = tuple(float(v) for v in obj.get("eval_times_m", default_cfg.eval_times_m))
-    horizon_m = float(obj.get("horizon_m", default_cfg.horizon_m))
-    grid_size = int(obj.get("grid_size", default_cfg.grid_size))
-    treatment_times_m = tuple(obj.get("treatment_times_m", default_cfg.treatment_times_m))
-
-    raw_pairs = obj.get("contrast_pairs_m", default_cfg.contrast_pairs_m)
-    contrast_pairs_m: tuple[tuple[float | None, float | None], ...] = tuple(
-        tuple(pair) for pair in raw_pairs
-    )
-
-    return SurvivalPredictionConfig(
-        eval_times_m=eval_times_m,
-        horizon_m=horizon_m,
-        grid_size=grid_size,
-        treatment_times_m=treatment_times_m,
-        contrast_pairs_m=contrast_pairs_m,
-    )
-
-
-def _parse_ppc_config(obj: Any) -> SurvivalPPCConfig:
-    default_cfg = SurvivalPPCConfig()
-
-    if obj is None:
-        return default_cfg
-    if not isinstance(obj, dict):
-        raise ValueError("ppc must be a JSON object.")
-
-    raw_draws = obj.get("draw_indices", default_cfg.draw_indices)
-    draw_indices = None if raw_draws is None else tuple(int(v) for v in raw_draws)
-
-    return SurvivalPPCConfig(
-        enabled=bool(obj.get("enabled", default_cfg.enabled)),
-        draw_indices=draw_indices,
-        sample_posterior_predictive=bool(
-            obj.get(
-                "sample_posterior_predictive",
-                default_cfg.sample_posterior_predictive,
-            )
-        ),
-        random_seed=int(obj.get("random_seed", default_cfg.random_seed)),
-    )
-
-
-def _parse_survival_analysis_config(obj: dict[str, Any]) -> SurvivalAnalysisConfig:
+def _parse_treatment_analysis_config(obj: dict[str, Any]) -> TreatmentAnalysisConfig:
     if "input_path" not in obj:
         raise ValueError("Config must include input_path.")
 
-    default_cfg = SurvivalAnalysisConfig(input_path=str(obj["input_path"]))
-    prediction_cfg = _parse_prediction_config(obj.get("prediction"))
-    ppc_cfg = _parse_ppc_config(obj.get("ppc"))
+    default_cfg = TreatmentAnalysisConfig(input_path=str(obj["input_path"]))
     input_columns_cfg = _parse_input_columns(obj.get("input_columns"))
     derived_columns_cfg = _parse_derived_columns(obj.get("derived_columns"))
 
@@ -173,7 +118,7 @@ def _parse_survival_analysis_config(obj: dict[str, Any]) -> SurvivalAnalysisConf
         name="post_ttt_breaks",
     )
 
-    return SurvivalAnalysisConfig(
+    return TreatmentAnalysisConfig(
         input_path=str(obj["input_path"]),
         out_dir=str(obj.get("out_dir", default_cfg.out_dir)),
         graph_mode=str(obj.get("graph_mode", default_cfg.graph_mode)),
@@ -184,35 +129,27 @@ def _parse_survival_analysis_config(obj: dict[str, Any]) -> SurvivalAnalysisConf
         surv_breaks=surv_breaks,
         ttt_breaks=ttt_breaks,
         post_ttt_breaks=post_ttt_breaks,
-        surv_x_cols=tuple(obj.get("surv_x_cols", default_cfg.surv_x_cols)),
+        ttt_x_cols=tuple(obj.get("ttt_x_cols", default_cfg.ttt_x_cols)),
         rng_seed=int(obj.get("rng_seed", default_cfg.rng_seed)),
         inference=dict(obj.get("inference", default_cfg.inference)),
-        prediction=prediction_cfg,
-        ppc=ppc_cfg,
-        prediction_profile=str(
-            obj.get("prediction_profile", default_cfg.prediction_profile)
-        ),
-        prediction_area_id=(
-            None if obj.get("prediction_area_id") is None else int(obj["prediction_area_id"])
-        ),
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run standalone survival analysis from a JSON config file."
+        description="Run standalone treatment analysis from a JSON config file."
     )
     parser.add_argument(
         "config_path",
         type=str,
-        help="Path to survival analysis JSON config file.",
+        help="Path to treatment analysis JSON config file.",
     )
     args = parser.parse_args()
 
     raw_cfg = _load_json(args.config_path)
-    cfg = _parse_survival_analysis_config(raw_cfg)
-    out_dir = run_survival_analysis(cfg)
-    print(f"Survival analysis completed. Artifacts written to: {out_dir}")
+    cfg = _parse_treatment_analysis_config(raw_cfg)
+    out_dir = run_treatment_analysis(cfg)
+    print(f"Treatment analysis completed. Artifacts written to: {out_dir}")
 
 
 if __name__ == "__main__":

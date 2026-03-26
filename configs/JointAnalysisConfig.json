@@ -1,6 +1,6 @@
 {
   "input_path": "data/joint_ttt_survival_dataset.csv",
-  "out_dir": "artifacts/standalone_survival_analysis_example",
+  "out_dir": "artifacts/joint_analysis_example",
 
   "graph_mode": "from_area_id_ring",
   "graph_A": null,
@@ -36,6 +36,16 @@
     "stage_III"
   ],
 
+  "ttt_x_cols": [
+    "age_per10_centered",
+    "cci",
+    "tumor_size_log",
+    "ses",
+    "sex_male",
+    "stage_II",
+    "stage_III"
+  ],
+
   "surv_breaks": [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48, 60],
   "ttt_breaks": [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 60],
   "post_ttt_breaks": [0, 3, 6, 12, 24, 60],
@@ -50,20 +60,5 @@
     "dense_mass": false,
     "max_tree_depth": 10,
     "progress_bar": true
-  },
-
-  "prediction": {
-    "eval_times_m": [12.0, 24.0, 36.0, 60.0],
-    "horizon_m": 60.0,
-    "grid_size": 400,
-    "treatment_times_m": [null, 1.0, 3.0, 6.0],
-    "contrast_pairs_m": [
-      [1.0, 3.0],
-      [3.0, 6.0],
-      [1.0, 6.0]
-    ]
-  },
-
-  "prediction_profile": "first_row",
-  "prediction_area_id": null
+  }
 }

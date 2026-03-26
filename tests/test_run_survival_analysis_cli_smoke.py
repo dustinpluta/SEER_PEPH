@@ -1,22 +1,13 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from seer_peph.analysis.survival_analysis import (
-    DerivedColumnConfig,
-    InputColumnConfig,
-    SurvivalAnalysisConfig,
-    SurvivalPPCConfig,
-    run_survival_analysis,
-)
-from seer_peph.data.prep import (
-    DEFAULT_POST_TTT_BREAKS,
-    DEFAULT_SURV_BREAKS,
-    DEFAULT_TTT_BREAKS,
-)
 from seer_peph.graphs import make_ring_lattice
 from seer_peph.validation.simulate import simulate_joint
 
@@ -51,7 +42,7 @@ def _rename_to_custom_schema(wide: pd.DataFrame) -> pd.DataFrame:
 
 
 @pytest.mark.integration
-def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> None:
+def test_run_survival_analysis_cli_smoke_nondefault_schema(tmp_path: Path) -> None:
     graph = make_ring_lattice(A=6, k=2)
 
     wide = simulate_joint(
@@ -69,46 +60,47 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
     input_path = tmp_path / "simulated_wide_custom_schema.csv"
     wide.to_csv(input_path, index=False)
 
-    out_dir = tmp_path / "survival_analysis_artifacts"
+    out_dir = tmp_path / "survival_analysis_cli_artifacts"
+    config_path = tmp_path / "survival_analysis_config.json"
 
-    cfg = SurvivalAnalysisConfig(
-        input_path=str(input_path),
-        out_dir=str(out_dir),
-        graph_mode="from_area_id_ring",
-        graph_A=6,
-        graph_k=2,
-        input_columns=InputColumnConfig(
-            id_col="patient_id",
-            time_days_col="os_days",
-            event_col="os_event",
-            treatment_time_days_col="tx_start_days",
-            treatment_time_obs_days_col="tx_start_obs_days",
-            treatment_event_col="tx_event",
-            zip_col="county_zip",
-            sex_col="sex_raw",
-            stage_col="stage_raw",
-        ),
-        derived_columns=DerivedColumnConfig(
-            time_m_col="os_months",
-            treatment_time_m_col="tx_start_months",
-            treatment_time_obs_m_col="tx_start_obs_months",
-            area_id_col="county_area",
-            sex_male_col="is_male",
-            stage_ii_col="stage_two",
-            stage_iii_col="stage_three",
-        ),
-        surv_breaks=tuple(DEFAULT_SURV_BREAKS),
-        ttt_breaks=tuple(DEFAULT_TTT_BREAKS),
-        post_ttt_breaks=tuple(DEFAULT_POST_TTT_BREAKS),
-        surv_x_cols=(
+    config = {
+        "input_path": str(input_path),
+        "out_dir": str(out_dir),
+        "graph_mode": "from_area_id_ring",
+        "graph_A": 6,
+        "graph_k": 2,
+        "input_columns": {
+            "id_col": "patient_id",
+            "time_days_col": "os_days",
+            "event_col": "os_event",
+            "treatment_time_days_col": "tx_start_days",
+            "treatment_time_obs_days_col": "tx_start_obs_days",
+            "treatment_event_col": "tx_event",
+            "zip_col": "county_zip",
+            "sex_col": "sex_raw",
+            "stage_col": "stage_raw",
+        },
+        "derived_columns": {
+            "time_m_col": "os_months",
+            "treatment_time_m_col": "tx_start_months",
+            "treatment_time_obs_m_col": "tx_start_obs_months",
+            "area_id_col": "county_area",
+            "sex_male_col": "is_male",
+            "stage_ii_col": "stage_two",
+            "stage_iii_col": "stage_three",
+        },
+        "surv_x_cols": [
             "age_per10_centered",
             "cci",
             "tumor_size_log",
             "stage_two",
             "stage_three",
-        ),
-        rng_seed=101,
-        inference={
+        ],
+        "surv_breaks": [0.0, 2.0, 4.0, 8.0, 16.0, 60.0],
+        "ttt_breaks": [0.0, 1.0, 3.0, 6.0, 12.0, 60.0],
+        "post_ttt_breaks": [0.0, 2.0, 6.0, 18.0, 60.0],
+        "rng_seed": 101,
+        "inference": {
             "num_chains": 1,
             "num_warmup": 25,
             "num_samples": 25,
@@ -117,17 +109,49 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
             "max_tree_depth": 6,
             "progress_bar": False,
         },
-        ppc=SurvivalPPCConfig(
-            enabled=True,
-            draw_indices=None,
-            sample_posterior_predictive=True,
-            random_seed=123,
-        ),
+        "prediction": {
+            "eval_times_m": [12.0, 24.0, 36.0, 60.0],
+            "horizon_m": 60.0,
+            "grid_size": 150,
+            "treatment_times_m": [None, 1.0, 3.0, 6.0],
+            "contrast_pairs_m": [
+                [1.0, 3.0],
+                [3.0, 6.0]
+            ]
+        },
+        "ppc": {
+            "enabled": True,
+            "draw_indices": None,
+            "sample_posterior_predictive": True,
+            "random_seed": 123
+        },
+        "prediction_profile": "mean_profile",
+        "prediction_area_id": 2,
+    }
+
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "run_survival_analysis.py"
+    assert script_path.exists(), f"CLI script not found: {script_path}"
+
+    result = subprocess.run(
+        [sys.executable, str(script_path), str(config_path)],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
-    returned_out_dir = run_survival_analysis(cfg)
+    if result.returncode != 0:
+        raise AssertionError(
+            "CLI run failed.\n"
+            f"STDOUT:\n{result.stdout}\n\n"
+            f"STDERR:\n{result.stderr}"
+        )
 
-    assert returned_out_dir == out_dir
+    assert "Survival analysis completed." in result.stdout
     assert out_dir.exists()
 
     expected_files = [
@@ -149,7 +173,6 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
         "analysis_config.json",
         "run_manifest.json",
     ]
-
     for name in expected_files:
         path = out_dir / name
         assert path.exists(), f"Missing expected artifact: {name}"
@@ -157,49 +180,44 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
 
     fit_dir = out_dir / "fit_bundle"
     assert fit_dir.exists()
-    assert fit_dir.is_dir()
-
-    expected_fit_bundle_files = [
-        "manifest.json",
-        "samples.npz",
-        "data_arrays.npz",
-        "summary.json",
-        "scalar_summary.json",
-    ]
-    for name in expected_fit_bundle_files:
+    for name in ["manifest.json", "samples.npz", "data_arrays.npz", "summary.json", "scalar_summary.json"]:
         path = fit_dir / name
         assert path.exists(), f"Missing fit bundle artifact: {name}"
         assert path.stat().st_size > 0, f"Fit bundle artifact is empty: {name}"
 
     surv_long = pd.read_csv(out_dir / "surv_long.csv")
     ttt_long = pd.read_csv(out_dir / "ttt_long.csv")
-    beta_summary = pd.read_csv(out_dir / "survival_beta_summary.csv")
-    alpha_summary = pd.read_csv(out_dir / "survival_alpha_summary.csv")
-    delta_summary = pd.read_csv(out_dir / "survival_delta_post_summary.csv")
-    spatial_field = pd.read_csv(out_dir / "survival_spatial_field_summary.csv")
-    spatial_hyper = pd.read_csv(out_dir / "survival_spatial_hyperparameter_summary.csv")
     surv_scenarios = pd.read_csv(out_dir / "predicted_survival_scenarios.csv")
     rmst_scenarios = pd.read_csv(out_dir / "predicted_rmst_scenarios.csv")
-    surv_contrasts = pd.read_csv(out_dir / "predicted_survival_contrasts.csv")
-    rmst_contrasts = pd.read_csv(out_dir / "predicted_rmst_contrasts.csv")
     ppc_interval = pd.read_csv(out_dir / "survival_ppc_interval_counts.csv")
     ppc_area = pd.read_csv(out_dir / "survival_ppc_area_counts.csv")
     ppc_interval_treated = pd.read_csv(out_dir / "survival_ppc_interval_by_treatment_counts.csv")
 
     assert not surv_long.empty
     assert not ttt_long.empty
-    assert not beta_summary.empty
-    assert not alpha_summary.empty
-    assert not delta_summary.empty
-    assert not spatial_field.empty
-    assert not spatial_hyper.empty
     assert not surv_scenarios.empty
     assert not rmst_scenarios.empty
-    assert not surv_contrasts.empty
-    assert not rmst_contrasts.empty
     assert not ppc_interval.empty
     assert not ppc_area.empty
     assert not ppc_interval_treated.empty
+
+    input_df = pd.read_csv(input_path)
+
+    assert {
+        "patient_id",
+        "os_days",
+        "os_event",
+        "tx_start_days",
+        "tx_start_obs_days",
+        "tx_event",
+        "county_zip",
+        "sex_raw",
+        "stage_raw",
+        "os_months",
+        "tx_start_months",
+        "tx_start_obs_months",
+        "county_area",
+    }.issubset(input_df.columns)
 
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(surv_long.columns)
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(ttt_long.columns)
@@ -208,39 +226,9 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
         surv_long.columns
     )
 
-    assert {"parameter", "label", "mean"}.issubset(beta_summary.columns)
-    assert {"parameter", "label", "mean"}.issubset(alpha_summary.columns)
-    assert {"parameter", "label", "mean"}.issubset(delta_summary.columns)
-    assert {"parameter", "field", "area_id", "mean"}.issubset(spatial_field.columns)
-    assert {"parameter", "param_group", "mean"}.issubset(spatial_hyper.columns)
-
-    assert {
-        "time_m",
-        "treatment_time_m",
-        "area_id",
-        "mean_survival",
-    }.issubset(surv_scenarios.columns)
-
-    assert {
-        "treatment_time_m",
-        "mean_rmst",
-        "horizon_m",
-        "area_id",
-    }.issubset(rmst_scenarios.columns)
-
-    assert {
-        "time_m",
-        "treatment_time_m_a",
-        "treatment_time_m_b",
-        "mean_survival_diff",
-    }.issubset(surv_contrasts.columns)
-
-    assert {
-        "treatment_time_m_a",
-        "treatment_time_m_b",
-        "mean_rmst_diff",
-        "horizon_m",
-    }.issubset(rmst_contrasts.columns)
+    assert surv_scenarios["mean_survival"].between(0.0, 1.0).all()
+    assert (rmst_scenarios["mean_rmst"] >= 0.0).all()
+    assert (rmst_scenarios["mean_rmst"] <= rmst_scenarios["horizon_m"]).all()
 
     assert {
         "k",
@@ -276,23 +264,25 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
         "pp_mean_rate",
     }.issubset(ppc_interval_treated.columns)
 
-    assert surv_scenarios["mean_survival"].between(0.0, 1.0).all()
-    assert (rmst_scenarios["mean_rmst"] >= 0.0).all()
-    assert (rmst_scenarios["mean_rmst"] <= rmst_scenarios["horizon_m"]).all()
+    with (out_dir / "analysis_config.json").open("r", encoding="utf-8") as f:
+        analysis_cfg = json.load(f)
+    with (out_dir / "run_manifest.json").open("r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    with (out_dir / "prediction_profile.json").open("r", encoding="utf-8") as f:
+        pred_profile = json.load(f)
 
-    analysis_cfg = pd.read_json(out_dir / "analysis_config.json", typ="series")
-    run_manifest = pd.read_json(out_dir / "run_manifest.json", typ="series")
+    assert analysis_cfg["input_columns"]["id_col"] == "patient_id"
+    assert analysis_cfg["derived_columns"]["area_id_col"] == "county_area"
+    assert tuple(analysis_cfg["surv_breaks"]) == (0.0, 2.0, 4.0, 8.0, 16.0, 60.0)
+    assert analysis_cfg["ppc"]["enabled"] is True
 
-    assert "input_columns" in analysis_cfg.index
-    assert "derived_columns" in analysis_cfg.index
-    assert "surv_breaks" in analysis_cfg.index
-    assert "ttt_breaks" in analysis_cfg.index
-    assert "post_ttt_breaks" in analysis_cfg.index
-    assert "ppc" in analysis_cfg.index
+    assert tuple(manifest["surv_x_cols"]) == (
+        "age_per10_centered",
+        "cci",
+        "tumor_size_log",
+        "stage_two",
+        "stage_three",
+    )
+    assert manifest["ppc_enabled"] is True
 
-    assert "input_columns" in run_manifest.index
-    assert "derived_columns" in run_manifest.index
-    assert "surv_breaks" in run_manifest.index
-    assert "ttt_breaks" in run_manifest.index
-    assert "post_ttt_breaks" in run_manifest.index
-    assert "ppc_enabled" in run_manifest.index
+    assert pred_profile["area_id"] == 2

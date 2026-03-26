@@ -5,12 +5,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from seer_peph.analysis.survival_analysis import (
+from seer_peph.analysis.treatment_analysis import (
     DerivedColumnConfig,
     InputColumnConfig,
-    SurvivalAnalysisConfig,
-    SurvivalPPCConfig,
-    run_survival_analysis,
+    TreatmentAnalysisConfig,
+    run_treatment_analysis,
 )
 from seer_peph.data.prep import (
     DEFAULT_POST_TTT_BREAKS,
@@ -51,7 +50,7 @@ def _rename_to_custom_schema(wide: pd.DataFrame) -> pd.DataFrame:
 
 
 @pytest.mark.integration
-def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> None:
+def test_run_treatment_analysis_smoke_with_configured_schema(tmp_path: Path) -> None:
     graph = make_ring_lattice(A=6, k=2)
 
     wide = simulate_joint(
@@ -69,9 +68,9 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
     input_path = tmp_path / "simulated_wide_custom_schema.csv"
     wide.to_csv(input_path, index=False)
 
-    out_dir = tmp_path / "survival_analysis_artifacts"
+    out_dir = tmp_path / "treatment_analysis_artifacts"
 
-    cfg = SurvivalAnalysisConfig(
+    cfg = TreatmentAnalysisConfig(
         input_path=str(input_path),
         out_dir=str(out_dir),
         graph_mode="from_area_id_ring",
@@ -100,10 +99,12 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
         surv_breaks=tuple(DEFAULT_SURV_BREAKS),
         ttt_breaks=tuple(DEFAULT_TTT_BREAKS),
         post_ttt_breaks=tuple(DEFAULT_POST_TTT_BREAKS),
-        surv_x_cols=(
+        ttt_x_cols=(
             "age_per10_centered",
             "cci",
             "tumor_size_log",
+            "ses",
+            "is_male",
             "stage_two",
             "stage_three",
         ),
@@ -117,15 +118,9 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
             "max_tree_depth": 6,
             "progress_bar": False,
         },
-        ppc=SurvivalPPCConfig(
-            enabled=True,
-            draw_indices=None,
-            sample_posterior_predictive=True,
-            random_seed=123,
-        ),
     )
 
-    returned_out_dir = run_survival_analysis(cfg)
+    returned_out_dir = run_treatment_analysis(cfg)
 
     assert returned_out_dir == out_dir
     assert out_dir.exists()
@@ -133,19 +128,10 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
     expected_files = [
         "surv_long.csv",
         "ttt_long.csv",
-        "survival_beta_summary.csv",
-        "survival_alpha_summary.csv",
-        "survival_delta_post_summary.csv",
-        "survival_spatial_field_summary.csv",
-        "survival_spatial_hyperparameter_summary.csv",
-        "predicted_survival_scenarios.csv",
-        "predicted_rmst_scenarios.csv",
-        "predicted_survival_contrasts.csv",
-        "predicted_rmst_contrasts.csv",
-        "survival_ppc_interval_counts.csv",
-        "survival_ppc_area_counts.csv",
-        "survival_ppc_interval_by_treatment_counts.csv",
-        "prediction_profile.json",
+        "treatment_theta_summary.csv",
+        "treatment_gamma_summary.csv",
+        "treatment_spatial_field_summary.csv",
+        "treatment_spatial_hyperparameter_summary.csv",
         "analysis_config.json",
         "run_manifest.json",
     ]
@@ -173,112 +159,37 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
 
     surv_long = pd.read_csv(out_dir / "surv_long.csv")
     ttt_long = pd.read_csv(out_dir / "ttt_long.csv")
-    beta_summary = pd.read_csv(out_dir / "survival_beta_summary.csv")
-    alpha_summary = pd.read_csv(out_dir / "survival_alpha_summary.csv")
-    delta_summary = pd.read_csv(out_dir / "survival_delta_post_summary.csv")
-    spatial_field = pd.read_csv(out_dir / "survival_spatial_field_summary.csv")
-    spatial_hyper = pd.read_csv(out_dir / "survival_spatial_hyperparameter_summary.csv")
-    surv_scenarios = pd.read_csv(out_dir / "predicted_survival_scenarios.csv")
-    rmst_scenarios = pd.read_csv(out_dir / "predicted_rmst_scenarios.csv")
-    surv_contrasts = pd.read_csv(out_dir / "predicted_survival_contrasts.csv")
-    rmst_contrasts = pd.read_csv(out_dir / "predicted_rmst_contrasts.csv")
-    ppc_interval = pd.read_csv(out_dir / "survival_ppc_interval_counts.csv")
-    ppc_area = pd.read_csv(out_dir / "survival_ppc_area_counts.csv")
-    ppc_interval_treated = pd.read_csv(out_dir / "survival_ppc_interval_by_treatment_counts.csv")
+    theta_summary = pd.read_csv(out_dir / "treatment_theta_summary.csv")
+    gamma_summary = pd.read_csv(out_dir / "treatment_gamma_summary.csv")
+    spatial_field = pd.read_csv(out_dir / "treatment_spatial_field_summary.csv")
+    spatial_hyper = pd.read_csv(out_dir / "treatment_spatial_hyperparameter_summary.csv")
 
     assert not surv_long.empty
     assert not ttt_long.empty
-    assert not beta_summary.empty
-    assert not alpha_summary.empty
-    assert not delta_summary.empty
+    assert not theta_summary.empty
+    assert not gamma_summary.empty
     assert not spatial_field.empty
     assert not spatial_hyper.empty
-    assert not surv_scenarios.empty
-    assert not rmst_scenarios.empty
-    assert not surv_contrasts.empty
-    assert not rmst_contrasts.empty
-    assert not ppc_interval.empty
-    assert not ppc_area.empty
-    assert not ppc_interval_treated.empty
 
+    # Canonical internal long-format schema should be present.
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(surv_long.columns)
     assert {"id", "k", "t0", "t1", "exposure", "event", "area_id"}.issubset(ttt_long.columns)
 
-    assert {"age_per10_centered", "cci", "tumor_size_log", "stage_two", "stage_three"}.issubset(
-        surv_long.columns
-    )
+    # Configured treatment covariates should be preserved into long format.
+    assert {
+        "age_per10_centered",
+        "cci",
+        "tumor_size_log",
+        "ses",
+        "is_male",
+        "stage_two",
+        "stage_three",
+    }.issubset(ttt_long.columns)
 
-    assert {"parameter", "label", "mean"}.issubset(beta_summary.columns)
-    assert {"parameter", "label", "mean"}.issubset(alpha_summary.columns)
-    assert {"parameter", "label", "mean"}.issubset(delta_summary.columns)
+    assert {"parameter", "label", "mean"}.issubset(theta_summary.columns)
+    assert {"parameter", "label", "mean"}.issubset(gamma_summary.columns)
     assert {"parameter", "field", "area_id", "mean"}.issubset(spatial_field.columns)
     assert {"parameter", "param_group", "mean"}.issubset(spatial_hyper.columns)
-
-    assert {
-        "time_m",
-        "treatment_time_m",
-        "area_id",
-        "mean_survival",
-    }.issubset(surv_scenarios.columns)
-
-    assert {
-        "treatment_time_m",
-        "mean_rmst",
-        "horizon_m",
-        "area_id",
-    }.issubset(rmst_scenarios.columns)
-
-    assert {
-        "time_m",
-        "treatment_time_m_a",
-        "treatment_time_m_b",
-        "mean_survival_diff",
-    }.issubset(surv_contrasts.columns)
-
-    assert {
-        "treatment_time_m_a",
-        "treatment_time_m_b",
-        "mean_rmst_diff",
-        "horizon_m",
-    }.issubset(rmst_contrasts.columns)
-
-    assert {
-        "k",
-        "observed_events",
-        "observed_exposure",
-        "pp_mean_events",
-        "pp_q05_events",
-        "pp_q95_events",
-        "observed_rate",
-        "pp_mean_rate",
-    }.issubset(ppc_interval.columns)
-
-    assert {
-        "area_id",
-        "observed_events",
-        "observed_exposure",
-        "pp_mean_events",
-        "pp_q05_events",
-        "pp_q95_events",
-        "observed_rate",
-        "pp_mean_rate",
-    }.issubset(ppc_area.columns)
-
-    assert {
-        "k",
-        "treated_td",
-        "observed_events",
-        "observed_exposure",
-        "pp_mean_events",
-        "pp_q05_events",
-        "pp_q95_events",
-        "observed_rate",
-        "pp_mean_rate",
-    }.issubset(ppc_interval_treated.columns)
-
-    assert surv_scenarios["mean_survival"].between(0.0, 1.0).all()
-    assert (rmst_scenarios["mean_rmst"] >= 0.0).all()
-    assert (rmst_scenarios["mean_rmst"] <= rmst_scenarios["horizon_m"]).all()
 
     analysis_cfg = pd.read_json(out_dir / "analysis_config.json", typ="series")
     run_manifest = pd.read_json(out_dir / "run_manifest.json", typ="series")
@@ -288,11 +199,11 @@ def test_run_survival_analysis_smoke_with_configured_schema(tmp_path: Path) -> N
     assert "surv_breaks" in analysis_cfg.index
     assert "ttt_breaks" in analysis_cfg.index
     assert "post_ttt_breaks" in analysis_cfg.index
-    assert "ppc" in analysis_cfg.index
+    assert "ttt_x_cols" in analysis_cfg.index
 
     assert "input_columns" in run_manifest.index
     assert "derived_columns" in run_manifest.index
     assert "surv_breaks" in run_manifest.index
     assert "ttt_breaks" in run_manifest.index
     assert "post_ttt_breaks" in run_manifest.index
-    assert "ppc_enabled" in run_manifest.index
+    assert "ttt_x_cols" in run_manifest.index
