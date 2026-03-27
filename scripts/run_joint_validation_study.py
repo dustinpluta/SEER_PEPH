@@ -237,6 +237,7 @@ def _collect_per_replicate_tables(
         "survival_alpha": "recovery_survival_alpha.csv",
         "treatment_gamma": "recovery_treatment_gamma.csv",
         "survival_delta_post": "recovery_survival_delta_post.csv",
+        "survival_delta_post_linear": "recovery_survival_delta_post_linear.csv",
         "area_fields": "recovery_area_fields.csv",
         "area_field_summary": "recovery_area_field_summary.csv",
         "fit_diagnostics": "fit_diagnostics.csv",
@@ -376,6 +377,7 @@ def main() -> None:
     all_survival_alpha: list[pd.DataFrame] = []
     all_treatment_gamma: list[pd.DataFrame] = []
     all_survival_delta_post: list[pd.DataFrame] = []
+    all_survival_delta_post_linear: list[pd.DataFrame] = []
     all_area_fields: list[pd.DataFrame] = []
     all_area_field_summary: list[pd.DataFrame] = []
     all_fit_diagnostics: list[pd.DataFrame] = []
@@ -411,6 +413,8 @@ def main() -> None:
                 all_treatment_gamma.append(tables["treatment_gamma"])
             if "survival_delta_post" in tables:
                 all_survival_delta_post.append(tables["survival_delta_post"])
+            if "survival_delta_post_linear" in tables:
+                all_survival_delta_post_linear.append(tables["survival_delta_post_linear"])
             if "area_fields" in tables:
                 all_area_fields.append(tables["area_fields"])
             if "area_field_summary" in tables:
@@ -434,6 +438,7 @@ def main() -> None:
     survival_alpha_all = _concat_tables(all_survival_alpha)
     treatment_gamma_all = _concat_tables(all_treatment_gamma)
     survival_delta_post_all = _concat_tables(all_survival_delta_post)
+    survival_delta_post_linear_all = _concat_tables(all_survival_delta_post_linear)
     area_fields_all = _concat_tables(all_area_fields)
     area_field_summary_all = _concat_tables(all_area_field_summary)
     fit_diagnostics_all = _concat_tables(all_fit_diagnostics)
@@ -448,6 +453,11 @@ def main() -> None:
         treatment_gamma_all.to_csv(per_seed_dir / "recovery_treatment_gamma_all.csv", index=False)
     if not survival_delta_post_all.empty:
         survival_delta_post_all.to_csv(per_seed_dir / "recovery_survival_delta_post_all.csv", index=False)
+    if not survival_delta_post_linear_all.empty:
+        survival_delta_post_linear_all.to_csv(
+            per_seed_dir / "recovery_survival_delta_post_linear_all.csv",
+            index=False,
+        )
     if not area_fields_all.empty:
         area_fields_all.to_csv(per_seed_dir / "recovery_area_fields_all.csv", index=False)
     if not area_field_summary_all.empty:
@@ -478,6 +488,10 @@ def main() -> None:
         survival_delta_post_all,
         group_cols=["scenario", "group", "index"],
     )
+    survival_delta_post_linear_summary = _summarize_scalar_or_vector_recovery(
+        survival_delta_post_linear_all,
+        group_cols=["scenario", "parameter", "label"],
+    )
     area_field_summary = _summarize_area_field_recovery(area_field_summary_all)
     fit_diagnostics_summary = _summarize_fit_diagnostics(fit_diagnostics_all)
 
@@ -491,6 +505,11 @@ def main() -> None:
         treatment_gamma_summary.to_csv(summary_dir / "summary_treatment_gamma.csv", index=False)
     if not survival_delta_post_summary.empty:
         survival_delta_post_summary.to_csv(summary_dir / "summary_survival_delta_post.csv", index=False)
+    if not survival_delta_post_linear_summary.empty:
+        survival_delta_post_linear_summary.to_csv(
+            summary_dir / "summary_survival_delta_post_linear.csv",
+            index=False,
+        )
     if not area_field_summary.empty:
         area_field_summary.to_csv(summary_dir / "summary_area_fields.csv", index=False)
     if not fit_diagnostics_summary.empty:

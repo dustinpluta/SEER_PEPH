@@ -22,12 +22,17 @@ def extract_survival_effects(
         Dictionary with keys:
         - "beta": baseline survival covariate effects
         - "alpha": survival baseline interval effects
-        - "delta_post": post-treatment survival effects
+        - "delta_post": implied post-treatment survival effects by interval
+
+        If the model contains a low-dimensional post-treatment parameterization,
+        also includes:
+        - "delta_post_linear": direct summaries for the linear-trend parameters
 
         If `include_draws=True`, also includes:
         - "beta_draws"
         - "alpha_draws"
         - "delta_post_draws"
+        - "delta_post_linear_draws" (when present)
     """
     samples = fit.samples
     scalar_summary = fit.scalar_summary
@@ -79,6 +84,36 @@ def extract_survival_effects(
                 base_name="delta_post",
                 labels=_default_interval_labels("post_treatment_interval", delta_draws.shape[1]),
             )
+
+    linear_names = [
+        name
+        for name in ("delta_post_intercept", "delta_post_slope")
+        if name in scalar_summary
+    ]
+    if linear_names:
+        out["delta_post_linear"] = _extract_scalar_rows(
+            scalar_summary=scalar_summary,
+            names=linear_names,
+            param_group="survival_delta_post_linear",
+        )
+
+        if include_draws:
+            draw_frames: list[pd.DataFrame] = []
+            for name in linear_names:
+                if name not in samples:
+                    continue
+                vals = np.asarray(samples[name]).reshape(-1)
+                draw_frames.append(
+                    pd.DataFrame(
+                        {
+                            "draw": np.arange(vals.shape[0], dtype=int),
+                            "parameter": name,
+                            "value": vals,
+                        }
+                    )
+                )
+            if draw_frames:
+                out["delta_post_linear_draws"] = pd.concat(draw_frames, ignore_index=True)
 
     return out
 

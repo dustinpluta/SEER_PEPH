@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 
 from seer_peph.data.prep import DAYS_PER_MONTH
-from seer_peph.graphs import make_ring_lattice
 from seer_peph.validation.joint_results import JointSimulationResult
 from seer_peph.validation.joint_scenarios import JointSimulationScenario
 
@@ -122,7 +121,11 @@ def simulate_joint_scenario(
             rows.append(row)
             next_id += 1
 
-    wide = pd.DataFrame.from_records(rows).sort_values(["area_id", "id"]).reset_index(drop=True)
+    wide = (
+        pd.DataFrame.from_records(rows)
+        .sort_values(["area_id", "id"])
+        .reset_index(drop=True)
+    )
 
     parameter_truth = _build_parameter_truth(scenario)
     area_truth = pd.DataFrame(
@@ -158,6 +161,7 @@ def simulate_joint_scenario(
         metadata=metadata,
     )
 
+
 def _sample_joint_spatial_fields(
     *,
     neighbors: list[list[int]],
@@ -189,7 +193,10 @@ def _sample_joint_spatial_fields(
 
     u_surv = sigma_surv * _standardize(g_surv)
     u_ttt_ind = sigma_ttt_ind * _standardize(g_ttt_ind)
-    u_ttt = rho_u * _standardize(u_surv) + np.sqrt(max(0.0, 1.0 - rho_u**2)) * _standardize(u_ttt_ind)
+    u_ttt = (
+        rho_u * _standardize(u_surv)
+        + np.sqrt(max(0.0, 1.0 - rho_u**2)) * _standardize(u_ttt_ind)
+    )
     u_ttt = sigma_ttt * _standardize(u_ttt)
 
     return u_surv, u_ttt, u_ttt_ind
@@ -236,7 +243,10 @@ def _sample_subject_covariates(
     sex_male = int(rng.binomial(1, scenario.prob_male))
 
     p1 = max(0.0, 1.0 - scenario.prob_stage_ii - scenario.prob_stage_iii)
-    stage = rng.choice(["I", "II", "III"], p=[p1, scenario.prob_stage_ii, scenario.prob_stage_iii])
+    stage = rng.choice(
+        ["I", "II", "III"],
+        p=[p1, scenario.prob_stage_ii, scenario.prob_stage_iii],
+    )
     stage_ii = int(stage == "II")
     stage_iii = int(stage == "III")
 
@@ -416,6 +426,25 @@ def _build_parameter_truth(scenario: JointSimulationScenario) -> pd.DataFrame:
             }
         )
 
+    rows.append(
+        {
+            "parameter": "delta_post_intercept",
+            "index": None,
+            "label": "delta_post_intercept",
+            "group": "post_treatment_effect_linear",
+            "truth": float(scenario.delta_post_intercept),
+        }
+    )
+    rows.append(
+        {
+            "parameter": "delta_post_slope",
+            "index": None,
+            "label": "delta_post_slope",
+            "group": "post_treatment_effect_linear",
+            "truth": float(scenario.delta_post_slope),
+        }
+    )
+
     for j, val in enumerate(scenario.delta_post):
         rows.append(
             {
@@ -468,6 +497,7 @@ def _build_parameter_truth(scenario: JointSimulationScenario) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
+
 def _build_neighbors_for_scenario(
     scenario: JointSimulationScenario,
 ) -> list[list[int]]:
@@ -518,7 +548,6 @@ def _build_support_diagnostics(
 
     surv_obs_m = wide["time"] / DAYS_PER_MONTH
     ttt_obs_m = wide["treatment_time_obs"] / DAYS_PER_MONTH
-    ttt_true_m = wide["treatment_time_true_m"]
 
     surv_counts = _bin_counts(surv_obs_m.to_numpy(dtype=float), surv_breaks, "k")
     ttt_obs_counts = _bin_counts(ttt_obs_m.to_numpy(dtype=float), ttt_breaks, "k")
@@ -595,6 +624,12 @@ def _truth_columns_from_scenario(scenario: JointSimulationScenario) -> dict[str,
         out[f"alpha_surv_{j}_true"] = float(val)
     for j, val in enumerate(scenario.gamma_ttt):
         out[f"gamma_ttt_{j}_true"] = float(val)
+
+    out["delta_post_intercept_true"] = float(scenario.delta_post_intercept)
+    out["delta_post_slope_true"] = float(scenario.delta_post_slope)
+
+    for j, val in enumerate(scenario.post_index_scaled):
+        out[f"post_index_scaled_{j}_true"] = float(val)
     for j, val in enumerate(scenario.delta_post):
         out[f"delta_post_{j}_true"] = float(val)
 

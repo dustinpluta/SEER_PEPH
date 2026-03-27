@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -30,7 +30,7 @@ from seer_peph.fitting.extract import (
 )
 from seer_peph.fitting.fit_models import fit_joint_model
 from seer_peph.fitting.io import save_joint_fit
-from seer_peph.graphs import make_ring_lattice
+from seer_peph.graphs import from_edge_csv, make_ring_lattice
 from seer_peph.inference.run import InferenceConfig
 
 
@@ -43,6 +43,8 @@ class InputColumnConfig:
     treatment_time_obs_days_col: str = "treatment_time_obs"
     treatment_event_col: str = "treatment_event"
     zip_col: str = "zip"
+    area_id_col_optional: str = "area_id"
+    county_fips_col_optional: str = "county_fips"
     sex_col: str = "sex"
     stage_col: str = "stage"
 
@@ -74,7 +76,9 @@ class JointAnalysisConfig:
     # Graph settings
     graph_mode: str = "from_area_id_ring"
     graph_A: int | None = None
-    graph_k: int = 4
+    graph_k: int | None = 4
+    graph_edges_path: str | None = None
+    graph_lookup_path: str | None = None
 
     # Column schema
     input_columns: InputColumnConfig = field(default_factory=InputColumnConfig)
@@ -120,6 +124,85 @@ class JointAnalysisConfig:
     # PPC
     ppc: JointPPCConfig = field(default_factory=JointPPCConfig)
 
+    @staticmethod
+    def from_dict(obj: Mapping[str, Any]) -> "JointAnalysisConfig":
+        if "input_path" not in obj:
+            raise ValueError("Config must include input_path.")
+
+        input_columns = InputColumnConfig(**obj.get("input_columns", {}))
+        derived_columns = DerivedColumnConfig(**obj.get("derived_columns", {}))
+        ppc = JointPPCConfig(**obj.get("ppc", {}))
+
+        return JointAnalysisConfig(
+            input_path=str(obj["input_path"]),
+            out_dir=str(obj.get("out_dir", "artifacts/joint_analysis")),
+            graph_mode=str(obj.get("graph_mode", "from_area_id_ring")),
+            graph_A=None if obj.get("graph_A") is None else int(obj["graph_A"]),
+            graph_k=4 if obj.get("graph_k") is None else int(obj["graph_k"]),
+            graph_edges_path=obj.get("graph_edges_path"),
+            graph_lookup_path=obj.get("graph_lookup_path"),
+            input_columns=input_columns,
+            derived_columns=derived_columns,
+            surv_breaks=tuple(float(x) for x in obj.get("surv_breaks", DEFAULT_SURV_BREAKS)),
+            ttt_breaks=tuple(float(x) for x in obj.get("ttt_breaks", DEFAULT_TTT_BREAKS)),
+            post_ttt_breaks=tuple(float(x) for x in obj.get("post_ttt_breaks", DEFAULT_POST_TTT_BREAKS)),
+            surv_x_cols=tuple(
+                str(x)
+                for x in obj.get(
+                    "surv_x_cols",
+                    (
+                        "age_per10_centered",
+                        "cci",
+                        "tumor_size_log",
+                        "stage_II",
+                        "stage_III",
+                    ),
+                )
+            ),
+            ttt_x_cols=tuple(
+                str(x)
+                for x in obj.get(
+                    "ttt_x_cols",
+                    (
+                        "age_per10_centered",
+                        "cci",
+                        "tumor_size_log",
+                        "ses",
+                        "sex_male",
+                        "stage_II",
+                        "stage_III",
+                    ),
+                )
+            ),
+            rng_seed=int(obj.get("rng_seed", 123)),
+            inference=dict(
+                obj.get(
+                    "inference",
+                    {
+                        "num_chains": 2,
+                        "num_warmup": 500,
+                        "num_samples": 500,
+                        "target_accept_prob": 0.95,
+                        "dense_mass": False,
+                        "max_tree_depth": 10,
+                        "progress_bar": True,
+                    },
+                )
+            ),
+            ppc=ppc,
+        )
+
+    @staticmethod
+    def from_json(path: str | Path) -> "JointAnalysisConfig":
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Config file not found: {p}")
+        with p.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+        if not isinstance(obj, dict):
+            raise ValueError("Top-level joint analysis config must be a JSON object.")
+        return JointAnalysisConfig.from_dict(obj)
+
 
 def run_joint_analysis(config: JointAnalysisConfig) -> Path:
     out_dir = Path(config.out_dir)
@@ -131,6 +214,11 @@ def run_joint_analysis(config: JointAnalysisConfig) -> Path:
         input_cols=config.input_columns,
         derived_cols=config.derived_columns,
         required_covariates=tuple(sorted(set(config.surv_x_cols) | set(config.ttt_x_cols))),
+    )
+    wide_encoded = _drop_missing_model_rows(
+        wide_encoded,
+        surv_x_cols=config.surv_x_cols,
+        ttt_x_cols=config.ttt_x_cols,
     )
 
     graph = _build_graph(config, wide_encoded)
@@ -167,6 +255,8 @@ def run_joint_analysis(config: JointAnalysisConfig) -> Path:
         extra_metadata={
             "input_path": config.input_path,
             "graph_mode": config.graph_mode,
+            "graph_edges_path": config.graph_edges_path,
+            "graph_lookup_path": config.graph_lookup_path,
             "input_columns": asdict(config.input_columns),
             "derived_columns": asdict(config.derived_columns),
         },
@@ -187,6 +277,9 @@ def run_joint_analysis(config: JointAnalysisConfig) -> Path:
             "n_subjects": int(len(wide_encoded)),
             "n_surv_rows": int(len(surv_long)),
             "n_ttt_rows": int(len(ttt_long)),
+            "graph_mode": config.graph_mode,
+            "graph_A": int(graph.A),
+            "graph_n_edges": int(graph.n_edges),
             "surv_x_cols": list(config.surv_x_cols),
             "ttt_x_cols": list(config.ttt_x_cols),
             "surv_breaks": list(config.surv_breaks),
@@ -214,6 +307,11 @@ def _write_joint_extractions(fit, out_dir: Path) -> None:
         surv["alpha"].to_csv(out_dir / "joint_survival_alpha_summary.csv", index=False)
     if "delta_post" in surv:
         surv["delta_post"].to_csv(out_dir / "joint_survival_delta_post_summary.csv", index=False)
+    if "delta_post_linear" in surv:
+        surv["delta_post_linear"].to_csv(
+            out_dir / "joint_survival_delta_post_linear_summary.csv",
+            index=False,
+        )
 
     if "theta" in ttt:
         ttt["theta"].to_csv(out_dir / "joint_treatment_theta_summary.csv", index=False)
@@ -301,17 +399,94 @@ def _write_ppc_artifacts(
 
 
 def _build_graph(config: JointAnalysisConfig, wide_encoded: pd.DataFrame):
-    if config.graph_mode != "from_area_id_ring":
-        raise ValueError(f"Unsupported graph_mode: {config.graph_mode}")
+    if config.graph_mode == "from_area_id_ring":
+        if config.graph_A is not None:
+            A = int(config.graph_A)
+        else:
+            if "area_id" not in wide_encoded.columns:
+                raise ValueError("area_id column is required to build the graph.")
+            A = int(wide_encoded["area_id"].nunique())
 
-    if config.graph_A is not None:
-        A = int(config.graph_A)
-    else:
-        if "area_id" not in wide_encoded.columns:
-            raise ValueError("area_id column is required to build the graph.")
-        A = int(wide_encoded["area_id"].nunique())
+        return make_ring_lattice(A=A, k=int(config.graph_k))
 
-    return make_ring_lattice(A=A, k=int(config.graph_k))
+    if config.graph_mode == "county_graph_from_edges_file":
+        if config.graph_edges_path is None:
+            raise ValueError(
+                "graph_edges_path must be provided for graph_mode='county_graph_from_edges_file'."
+            )
+        return _build_graph_from_edge_file(
+            graph_edges_path=config.graph_edges_path,
+            graph_lookup_path=config.graph_lookup_path,
+            wide_encoded=wide_encoded,
+        )
+
+    raise ValueError(f"Unsupported graph_mode: {config.graph_mode}")
+
+
+def _build_graph_from_edge_file(
+    *,
+    graph_edges_path: str | Path,
+    graph_lookup_path: str | Path | None,
+    wide_encoded: pd.DataFrame,
+):
+    edge_path = Path(graph_edges_path)
+    if not edge_path.exists():
+        raise FileNotFoundError(f"Graph edge file not found: {edge_path}")
+
+    edges = pd.read_csv(edge_path)
+    if edges.empty:
+        raise ValueError("Graph edge file is empty.")
+
+    expected_edge_cols = {"area_id_1", "area_id_2"}
+    if not expected_edge_cols.issubset(edges.columns):
+        raise ValueError(
+            "Graph edge file must contain columns "
+            f"{sorted(expected_edge_cols)}. Found: {list(edges.columns)}"
+        )
+
+    lookup_area_ids: set[int] = set()
+    if graph_lookup_path is not None:
+        lookup_path = Path(graph_lookup_path)
+        if not lookup_path.exists():
+            raise FileNotFoundError(f"Graph lookup file not found: {lookup_path}")
+        lookup = pd.read_csv(lookup_path)
+        if "area_id" not in lookup.columns:
+            raise ValueError("Graph lookup file must contain an 'area_id' column.")
+        lookup_area_ids = set(pd.Series(lookup["area_id"]).astype(int).tolist())
+
+    wide_area_ids = set(pd.Series(wide_encoded["area_id"]).astype(int).tolist())
+    edge_area_ids = set(pd.Series(edges["area_id_1"]).astype(int).tolist()) | set(
+        pd.Series(edges["area_id_2"]).astype(int).tolist()
+    )
+
+    if lookup_area_ids and lookup_area_ids != edge_area_ids:
+        raise ValueError("Graph lookup area_id set does not match graph edge area_id set.")
+
+    if not wide_area_ids.issubset(edge_area_ids):
+        missing = sorted(wide_area_ids - edge_area_ids)
+        raise ValueError(
+            "Wide data contain area_id values not present in the graph edge file: "
+            f"{missing[:10]}"
+        )
+
+    edge_csv = edge_path.with_name(f"{edge_path.stem}__node1_node2.csv")
+    edge_pairs = (
+        edges.loc[:, ["area_id_1", "area_id_2"]]
+        .astype(int)
+        .drop_duplicates()
+        .copy()
+    )
+    edge_pairs = edge_pairs.rename(columns={"area_id_1": "node1", "area_id_2": "node2"})
+    edge_pairs.to_csv(edge_csv, index=False)
+
+    A = int(max(edge_area_ids) + 1)
+    return from_edge_csv(
+        edge_csv,
+        A=A,
+        node1_col="node1",
+        node2_col="node2",
+        name="county_graph_from_edges_file",
+    )
 
 
 def _load_wide_data(path: str) -> pd.DataFrame:
@@ -326,7 +501,6 @@ def _load_wide_data(path: str) -> pd.DataFrame:
         return pd.read_parquet(p)
 
     raise ValueError("Input path must be a .csv or .parquet file.")
-
 
 def _encode_like_prep(
     wide: pd.DataFrame,
@@ -385,12 +559,28 @@ def _encode_like_prep(
         df[derived_cols.stage_iii_col] = (df[input_cols.stage_col] == "III").astype("int8")
 
     if derived_cols.area_id_col not in df.columns:
-        if input_cols.zip_col in df.columns:
+        if input_cols.area_id_col_optional in df.columns:
+            df[derived_cols.area_id_col] = df[input_cols.area_id_col_optional].astype("int32")
+        elif input_cols.county_fips_col_optional in df.columns:
+            area_map = {
+                c: i
+                for i, c in enumerate(
+                    sorted(pd.Series(df[input_cols.county_fips_col_optional]).astype(str).unique())
+                )
+            }
+            df[derived_cols.area_id_col] = (
+                pd.Series(df[input_cols.county_fips_col_optional])
+                .astype(str)
+                .map(area_map)
+                .astype("int32")
+            )
+        elif input_cols.zip_col in df.columns:
             area_map = {z: i for i, z in enumerate(sorted(df[input_cols.zip_col].unique()))}
-            df[derived_cols.area_id_col] = df[input_cols.zip_col].map(area_map).astype("int16")
+            df[derived_cols.area_id_col] = df[input_cols.zip_col].map(area_map).astype("int32")
         else:
             raise ValueError(
-                f"Input data must contain either {derived_cols.area_id_col} "
+                f"Input data must contain either {derived_cols.area_id_col}, "
+                f"{input_cols.area_id_col_optional}, {input_cols.county_fips_col_optional}, "
                 f"or {input_cols.zip_col}."
             )
 
@@ -450,3 +640,35 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_ready(v) for v in value]
     return value
+
+def _drop_missing_model_rows(
+    wide_encoded: pd.DataFrame,
+    *,
+    surv_x_cols: Sequence[str],
+    ttt_x_cols: Sequence[str],
+) -> pd.DataFrame:
+    required = sorted(set(surv_x_cols) | set(ttt_x_cols))
+    missing_cols = [c for c in required if c not in wide_encoded.columns]
+    if missing_cols:
+        raise ValueError(
+            f"Cannot apply complete-case filtering; missing required covariate columns: {missing_cols}"
+        )
+
+    before = len(wide_encoded)
+    out = wide_encoded.dropna(subset=required).copy()
+    after = len(out)
+
+    if after == 0:
+        raise ValueError(
+            "Complete-case filtering removed all rows. "
+            "Check the wide data and required covariates."
+        )
+
+    dropped = before - after
+    if dropped > 0:
+        print(
+            f"Dropping {dropped} wide-form rows with missing modeled covariates "
+            f"out of {before} total rows."
+        )
+
+    return out

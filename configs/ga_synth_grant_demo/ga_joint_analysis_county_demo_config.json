@@ -1,0 +1,99 @@
+{
+  "input_path": "data/ga_synth_grant_demo/ga_crc_medicare_synth_10000.csv",
+  "out_dir": "artifacts/ga_joint_analysis_demo_10000",
+  "graph_mode": "county_graph_from_edges_file",
+  "graph_edges_path": "data/ga_synth_grant_demo/ga_county_graph_edges.csv",
+  "graph_lookup_path": "data/ga_synth_grant_demo/ga_county_lookup.csv",
+  "graph_A": 159,
+  "graph_k": null,
+  "input_columns": {
+    "id_col": "id",
+    "time_days_col": "time",
+    "event_col": "event",
+    "treatment_time_days_col": "treatment_time",
+    "treatment_time_obs_days_col": "treatment_time_obs",
+    "treatment_event_col": "treatment_event",
+    "zip_col": "zip",
+    "area_id_col_optional": "area_id",
+    "county_fips_col_optional": "county_fips",
+    "sex_col": "sex",
+    "stage_col": "stage"
+  },
+  "derived_columns": {
+    "time_m_col": "time_m",
+    "treatment_time_m_col": "treatment_time_m",
+    "treatment_time_obs_m_col": "treatment_time_obs_m",
+    "area_id_col": "area_id",
+    "sex_male_col": "sex_male",
+    "stage_ii_col": "stage_II",
+    "stage_iii_col": "stage_III"
+  },
+  "surv_x_cols": [
+    "age_per10_centered",
+    "cci",
+    "tumor_size_log",
+    "stage_II",
+    "stage_III"
+  ],
+  "ttt_x_cols": [
+    "age_per10_centered",
+    "cci",
+    "tumor_size_log",
+    "ses",
+    "sex_male",
+    "stage_II",
+    "stage_III"
+  ],
+  "surv_breaks": [
+    0,
+    1,
+    2,
+    3,
+    6,
+    9,
+    12,
+    18,
+    24,
+    36,
+    48,
+    60
+  ],
+  "ttt_breaks": [
+    0,
+    1,
+    2,
+    3,
+    6,
+    9,
+    12,
+    18,
+    24,
+    36,
+    60
+  ],
+  "post_ttt_breaks": [
+    0,
+    3,
+    6,
+    12,
+    24,
+    60
+  ],
+  "rng_seed": 123,
+  "inference": {
+    "num_chains": 2,
+    "num_warmup": 500,
+    "num_samples": 500,
+    "target_accept_prob": 0.95,
+    "dense_mass": false,
+    "max_tree_depth": 10,
+    "progress_bar": true
+  },
+  "notes": {
+    "compatibility": [
+      "Dataset includes zip and area_id so it can run through the current wide-to-long pipeline with minimal changes.",
+      "graph_mode=county_graph_from_edges_file is intended as the county-based target mode for the grant pipeline.",
+      "If the current runner only supports ring-lattice graphs, use the provided county lookup and edge files to add graph-file support."
+    ]
+  }
+}

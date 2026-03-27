@@ -1,0 +1,638 @@
+# SEER-PEPH Current Package Workflow Guide
+
+Updated for the current frozen baseline joint model:
+
+* joint treatment-time / survival model
+* post-treatment survival effect parameterized as an **intercept + linear trend** over post-treatment interval index
+* simulation/validation framework aligned to that baseline model
+
+This guide is package-facing rather than theory-heavy. It is intended to document how a user should move from a subject-level wide CSV to fitted model artifacts and validation outputs using the current code state.
+
+---
+
+## 1. What the package currently supports
+
+SEER-PEPH currently supports three main analysis paths:
+
+1. **Standalone survival analysis**
+2. **Standalone treatment-time analysis**
+3. **Joint treatment-time / survival analysis**
+
+It also supports a formal, config-driven simulation/validation workflow for the joint model.
+
+At the current frozen baseline, the joint model should be treated as the primary reference implementation for ongoing validation work.
+
+---
+
+## 2. High-level package workflow
+
+A typical analysis run follows this sequence:
+
+1. Start with a **wide subject-level dataset** in CSV or parquet format.
+2. Encode or derive the internal modeling columns:
+
+   * survival time in months
+   * treatment time in months
+   * observed treatment follow-up time in months
+   * dummy-coded sex/stage variables
+   * contiguous `area_id`
+3. Expand the wide dataset into:
+
+   * `surv_long` for the survival model
+   * `ttt_long` for the treatment-time model
+4. Fit one of:
+
+   * standalone survival model
+   * standalone treatment model
+   * joint model
+5. Write a fit bundle and summary artifacts.
+6. Optionally run posterior predictive checks.
+7. For validation work, run the simulation/validation scripts and aggregate recovery summaries.
+
+The important design principle is that the models do **not** consume arbitrary raw wide data directly. The package first canonicalizes the schema, then builds stable long-format Poisson data, then fits the model.
+
+---
+
+## 3. Wide-form input data contract
+
+### 3.1 Minimum subject-level structure
+
+The package expects one row per subject in wide form.
+
+At minimum, the current joint analysis path requires the following conceptual fields:
+
+* subject identifier
+* survival/censoring time
+* survival event indicator
+* treatment time
+* observed treatment follow-up time
+* treatment event indicator
+* spatial unit identifier or ZIP code
+* modeled covariates
+
+### 3.2 Default raw input column names
+
+The current default raw schema used by the joint runner is:
+
+* `id`
+* `time`
+* `event`
+* `treatment_time`
+* `treatment_time_obs`
+* `treatment_event`
+* `zip`
+* `sex`
+* `stage`
+
+The current joint runner also assumes the modeled continuous/discrete covariates already exist in the input data with names such as:
+
+* `age_per10_centered`
+* `cci`
+* `tumor_size_log`
+* `ses`
+
+### 3.3 Derived columns created by the runner
+
+The joint analysis runner can derive these internal columns:
+
+* `time_m`
+* `treatment_time_m`
+* `treatment_time_obs_m`
+* `area_id`
+* `sex_male`
+* `stage_II`
+* `stage_III`
+
+Time conversion is done from days to months using the package constant `DAYS_PER_MONTH`.
+
+If `area_id` is not already present, the runner creates it from sorted unique ZIP codes.
+
+### 3.4 Default covariate sets
+
+Current default survival covariates:
+
+* `age_per10_centered`
+* `cci`
+* `tumor_size_log`
+* `stage_II`
+* `stage_III`
+
+Current default treatment-time covariates:
+
+* `age_per10_centered`
+* `cci`
+* `tumor_size_log`
+* `ses`
+* `sex_male`
+* `stage_II`
+* `stage_III`
+
+### 3.5 Example wide CSV layout
+
+A minimal example might look like this:
+
+| id | time | event | treatment_time | treatment_time_obs | treatment_event |   zip | sex | stage | age_per10_centered | cci | tumor_size_log |  ses |
+| -- | ---: | ----: | -------------: | -----------------: | --------------: | ----: | --- | ----- | -----------------: | --: | -------------: | ---: |
+| 1  |  480 |     1 |             90 |                 90 |               1 | 30301 | M   | II    |                0.4 |   2 |           1.35 | -0.2 |
+| 2  |  820 |     0 |            140 |                140 |               1 | 30301 | F   | I     |               -0.1 |   1 |           1.10 |  0.7 |
+| 3  |  210 |     1 |            210 |                210 |               0 | 30302 | M   | III   |                0.8 |   3 |           1.62 | -1.0 |
+
+Interpretation:
+
+* `time` is the observed survival/censoring time in **days**
+* `event` is the survival event indicator
+* `treatment_time` is the latent or recorded treatment time in **days**
+* `treatment_time_obs` is observed treatment follow-up time in **days** after accounting for death/censoring/admin follow-up
+* `treatment_event` indicates whether treatment occurred before death/censoring/admin follow-up
+
+---
+
+## 4. Long-format data built by the package
+
+### 4.1 Survival long data
+
+`build_survival_long(...)` produces rows with:
+
+* `id`
+* `k` : survival baseline interval index
+* `t0`, `t1`
+* `exposure`
+* `event`
+* modeled covariates
+* `treated_td` : time-dependent treatment indicator
+* `k_post` : post-treatment interval index, `-1` before treatment
+
+The survival expansion inserts subject-level cut points so each row lies in a single:
+
+* survival baseline interval
+* treatment-status regime
+* post-treatment interval, when treated
+
+### 4.2 Treatment long data
+
+`build_treatment_long(...)` produces rows with:
+
+* `id`
+* `k` : treatment-time baseline interval index
+* `t0`, `t1`
+* `exposure`
+* `event`
+* modeled covariates
+
+Treatment follow-up is censored by death, censoring, or administrative follow-up.
+
+---
+
+## 5. Current frozen baseline joint model
+
+The current frozen baseline model uses:
+
+* piecewise-exponential survival baseline
+* piecewise-exponential treatment-time baseline
+* spatial frailty structure for both processes
+* cross-process spatial coupling
+* post-treatment survival effect modeled as a **linear trend over post-treatment interval index**
+
+In the current baseline model, the post-treatment survival effect is parameterized by:
+
+* `delta_post_intercept`
+* `delta_post_slope`
+
+and the implied interval-specific effect vector `delta_post[j]` is constructed deterministically from those two parameters.
+
+This is the version that should be treated as the baseline for ongoing validation and documentation.
+
+---
+
+## 6. User-facing scripts
+
+The current package includes the following user-facing scripts.
+
+### 6.1 Analysis scripts
+
+* `scripts/run_survival_analysis.py`
+* `scripts/run_treatment_analysis.py`
+* `scripts/run_joint_analysis.py`
+
+These are the top-level analysis entry points for real or semi-real wide datasets.
+
+### 6.2 Validation scripts
+
+* `scripts/run_joint_validation_seed.py`
+* `scripts/run_joint_validation_study.py`
+
+These are the main user-facing scripts for structured simulation-based validation of the joint model.
+
+### 6.3 What each one does
+
+`run_survival_analysis.py`
+
+* reads wide-form data
+* canonicalizes/encodes columns
+* builds survival long-format data
+* fits the standalone survival model
+* writes fit bundle and summaries
+
+`run_treatment_analysis.py`
+
+* reads wide-form data
+* canonicalizes/encodes columns
+* builds treatment long-format data
+* fits the standalone treatment model
+* writes fit bundle and summaries
+
+`run_joint_analysis.py`
+
+* reads wide-form data
+* canonicalizes/encodes columns
+* builds both long-format datasets
+* fits the joint model
+* writes fit bundle, extraction summaries, and joint PPC tables
+
+`run_joint_validation_seed.py`
+
+* simulates one joint dataset from a named scenario and seed
+* builds long data
+* fits the joint model
+* writes truth tables, fit summaries, and per-seed recovery tables
+
+`run_joint_validation_study.py`
+
+* executes multiple scenario/seed runs from a JSON config
+* aggregates per-seed tables
+* writes study-level summary tables
+
+---
+
+## 7. Example joint analysis config
+
+The current example config for the joint analysis runner is structured like this:
+
+```json
+{
+  "input_path": "data/joint_ttt_survival_dataset.csv",
+  "out_dir": "artifacts/joint_analysis_example",
+  "graph_mode": "from_area_id_ring",
+  "graph_A": null,
+  "graph_k": 4,
+  "input_columns": {
+    "id_col": "id",
+    "time_days_col": "time",
+    "event_col": "event",
+    "treatment_time_days_col": "treatment_time",
+    "treatment_time_obs_days_col": "treatment_time_obs",
+    "treatment_event_col": "treatment_event",
+    "zip_col": "zip",
+    "sex_col": "sex",
+    "stage_col": "stage"
+  },
+  "derived_columns": {
+    "time_m_col": "time_m",
+    "treatment_time_m_col": "treatment_time_m",
+    "treatment_time_obs_m_col": "treatment_time_obs_m",
+    "area_id_col": "area_id",
+    "sex_male_col": "sex_male",
+    "stage_ii_col": "stage_II",
+    "stage_iii_col": "stage_III"
+  },
+  "surv_breaks": [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48, 60],
+  "ttt_breaks": [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 60],
+  "post_ttt_breaks": [0, 3, 6, 12, 24, 60],
+  "surv_x_cols": [
+    "age_per10_centered",
+    "cci",
+    "tumor_size_log",
+    "stage_II",
+    "stage_III"
+  ],
+  "ttt_x_cols": [
+    "age_per10_centered",
+    "cci",
+    "tumor_size_log",
+    "ses",
+    "sex_male",
+    "stage_II",
+    "stage_III"
+  ],
+  "rng_seed": 123,
+  "inference": {
+    "num_chains": 2,
+    "num_warmup": 500,
+    "num_samples": 500,
+    "target_accept_prob": 0.95,
+    "dense_mass": false,
+    "max_tree_depth": 10,
+    "progress_bar": true
+  },
+  "ppc": {
+    "enabled": true,
+    "draw_indices": null,
+    "sample_posterior_predictive": true,
+    "random_seed": 123
+  }
+}
+```
+
+### Example usage
+
+```bash
+python scripts/run_joint_analysis.py configs/JointAnalysisConfig.json
+```
+
+If your local CLI wrapper is different, the intended calling pattern is still:
+
+1. prepare a JSON config
+2. point the joint analysis script at that config
+3. collect artifacts from the requested output directory
+
+---
+
+## 8. Joint analysis artifacts to expect
+
+A typical joint analysis run writes artifacts such as:
+
+* `surv_long.csv`
+* `ttt_long.csv`
+* `fit_bundle/`
+* `joint_survival_beta_summary.csv`
+* `joint_survival_alpha_summary.csv`
+* `joint_survival_delta_post_summary.csv`
+* `joint_treatment_theta_summary.csv`
+* `joint_treatment_gamma_summary.csv`
+* `u_surv_summary.csv`
+* `u_ttt_summary.csv`
+* `u_ttt_ind_summary.csv`
+* `joint_spatial_hyperparameter_summary.csv`
+* `joint_coupling_summary.csv`
+* `joint_field_correlations_summary.csv`
+* joint PPC tables
+* `analysis_config.json`
+* `run_manifest.json`
+
+These outputs together provide:
+
+* fit metadata
+* posterior summaries for the main parameter blocks
+* area-level field summaries
+* cross-process coupling summaries
+* PPC diagnostics
+
+---
+
+## 9. Example validation study config
+
+The current validation study runner takes a JSON config with:
+
+* output directory
+* scenario list
+* seed list
+* inference settings
+* optional metadata
+
+A typical config looks like this:
+
+```json
+{
+  "out_dir": "artifacts/joint_validation_study_baseline",
+  "scenarios": ["J00", "J01", "J02", "J03", "J04", "J05", "J06"],
+  "seeds": [101, 202, 303],
+  "inference": {
+    "num_chains": 1,
+    "num_warmup": 200,
+    "num_samples": 200,
+    "target_accept_prob": 0.9,
+    "dense_mass": false,
+    "max_tree_depth": 8,
+    "progress_bar": false
+  },
+  "metadata": {
+    "study_label": "baseline_linear_trend_validation"
+  }
+}
+```
+
+### Example usage
+
+```bash
+python scripts/run_joint_validation_study.py configs/joint_validation_study.json
+```
+
+### Per-seed workflow
+
+Each scenario/seed run:
+
+1. simulates a wide dataset from a named validation scenario
+2. writes truth tables and support diagnostics
+3. builds `surv_long` and `ttt_long`
+4. fits the frozen baseline joint model
+5. writes posterior summaries
+6. writes recovery tables
+
+### Study-level aggregation
+
+The study runner then aggregates per-seed outputs into:
+
+* pooled per-seed tables
+* study-level summary tables
+* manifest files documenting scenarios, seeds, and inference settings
+
+---
+
+## 10. Validation outputs to expect
+
+The current validation framework writes, at minimum, tables such as:
+
+### Per-seed
+
+* `recovery_survival_beta.csv`
+* `recovery_treatment_theta.csv`
+* `recovery_survival_alpha.csv`
+* `recovery_treatment_gamma.csv`
+* `recovery_survival_delta_post.csv`
+* `recovery_survival_delta_post_linear.csv`
+* `recovery_area_fields.csv`
+* `recovery_area_field_summary.csv`
+* `fit_diagnostics.csv`
+
+### Study-level summaries
+
+* `summary_survival_beta.csv`
+* `summary_treatment_theta.csv`
+* `summary_survival_alpha.csv`
+* `summary_treatment_gamma.csv`
+* `summary_survival_delta_post.csv`
+* `summary_survival_delta_post_linear.csv`
+* `summary_area_fields.csv`
+* `summary_fit_diagnostics.csv`
+
+Depending on the diagnostics extension in use, additional support-linked and coupling/hyperparameter summaries may also be written.
+
+---
+
+## 11. Typical real-data workflow
+
+A typical real-data workflow for the current package is:
+
+### Step 1: prepare wide subject-level data
+
+Assemble one row per subject with:
+
+* time-to-death/censoring
+* event indicator
+* treatment time
+* observed treatment follow-up time
+* treatment event indicator
+* spatial unit or ZIP code
+* modeled covariates
+
+### Step 2: decide on interval grids
+
+Specify:
+
+* `surv_breaks`
+* `ttt_breaks`
+* `post_ttt_breaks`
+
+These should be chosen deliberately. They define the piecewise-exponential approximation and strongly affect identifiability and interpretation.
+
+### Step 3: create a config file
+
+Prepare a joint analysis config with:
+
+* input path
+* output path
+* column mappings
+* interval grids
+* survival covariates
+* treatment covariates
+* inference settings
+* PPC settings
+
+### Step 4: run the joint analysis script
+
+Run the joint analysis runner on the config.
+
+### Step 5: inspect artifacts
+
+Inspect:
+
+* posterior summaries for survival, treatment, and spatial blocks
+* fit diagnostics
+* PPC summaries
+* long-format data for sanity checks
+
+### Step 6: iterate only after diagnostics
+
+If the model needs revision, make changes through:
+
+* interval-grid revision
+* covariate set revision
+* validation study updates
+* model comparison through structured simulation
+
+The intended package workflow is explicitly **not** “fit once and move straight to scientific interpretation.”
+
+---
+
+## 12. Typical validation workflow
+
+A typical validation workflow is:
+
+### Step 1: define the validation study
+
+Choose:
+
+* scenario set
+* seeds
+* inference budget
+
+### Step 2: run the study runner
+
+Run the multi-scenario validation study config.
+
+### Step 3: inspect study summaries
+
+Review:
+
+* survival beta recovery
+* treatment theta recovery
+* survival alpha recovery
+* treatment gamma recovery
+* interval-wise `delta_post` recovery
+* direct linear-parameter recovery through `summary_survival_delta_post_linear.csv`
+* area-field recovery
+* fit diagnostics and divergence summaries
+
+### Step 4: diagnose weakness structurally
+
+Use the recovery summaries to distinguish:
+
+* likely coding errors
+* finite-sample weakness
+* parameterization limitations
+* prior/shrinkage issues
+* interval-grid issues
+
+### Step 5: test changes through simulation first
+
+Any model change should first be tested in the validation framework before using it in substantive real-data analysis.
+
+---
+
+## 13. Current practical guidance
+
+At the current frozen baseline state:
+
+* treat the **linear-trend** joint model as the package baseline
+* keep the validation framework aligned to that baseline model
+* use interval-wise `delta_post` summaries and direct linear-parameter summaries together
+* do not jump to real-data interpretation without checking PPC and validation results
+
+The key package philosophy remains:
+
+1. start from wide data
+2. canonicalize schema
+3. build long data explicitly
+4. fit via config-driven scripts
+5. inspect artifacts and validation outputs
+6. change the model only through structured, simulation-driven iteration
+
+---
+
+## 14. Recommended directory pattern
+
+A practical project layout for using the package is:
+
+```text
+project_root/
+  data/
+    joint_ttt_survival_dataset.csv
+  configs/
+    JointAnalysisConfig.json
+    joint_validation_study.json
+  artifacts/
+    joint_analysis_example/
+    joint_validation_study_baseline/
+```
+
+This keeps:
+
+* input data
+* config files
+* generated artifacts
+
+cleanly separated.
+
+---
+
+## 15. Current baseline summary
+
+The current baseline SEER-PEPH package workflow is:
+
+* **Input**: wide subject-level CSV/parquet
+* **Preprocessing**: schema canonicalization + wide-to-long conversion
+* **Model**: frozen baseline joint model with linear-trend post-treatment effect
+* **Outputs**: fit bundle, posterior summaries, PPC tables, recovery tables
+* **Validation**: scenario-driven, config-based, multi-seed study runner
+
+That is the package state that should be documented and treated as the current working baseline until the next deliberately adopted model revision.

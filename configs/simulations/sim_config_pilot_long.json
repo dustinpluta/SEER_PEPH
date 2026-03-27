@@ -1,0 +1,20 @@
+{
+  "out_dir": "artifacts/joint_validation_pilot_long",
+  "scenarios": ["J00", "J01", "J04"],
+  "seeds": [101, 202, 303, 404, 505, 606, 707, 808, 909, 1001, 1101, 1202, 1303, 1404, 1505, 1606, 1707, 1808, 1909, 2001, 2101, 
+                2202, 2303, 2404, 2505, 2606, 2707, 2808, 2909, 3001, 3101, 3202, 3303, 3404, 3505, 3606, 3707, 3808, 3909, 4001,
+                4104, 4202, 4303, 4404, 4505, 4606, 4707, 4808, 4909, 5001, 5101],
+  "inference": {
+    "num_chains": 1,
+    "num_warmup": 1000,
+    "num_samples": 1000,
+    "target_accept_prob": 0.9,
+    "dense_mass": false,
+    "max_tree_depth": 8,
+    "progress_bar": false
+  },
+  "metadata": {
+    "study_name": "joint_model_matched_validation_v1",
+    "notes": "Initial formal model-matched validation study."
+  }
+}

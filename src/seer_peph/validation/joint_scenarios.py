@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class JointSimulationScenario:
@@ -31,6 +33,9 @@ class JointSimulationScenario:
         len(delta_post)  == len(post_ttt_breaks) - 1
     - Covariate coefficient dictionaries are keyed by model-ready covariate
       column names used downstream in fitting.
+    - The post-treatment effect is parameterized as:
+          delta_post[j] = delta_post_intercept + delta_post_slope * z_j
+      where z_j is the centered/scaled post-treatment interval index.
     """
 
     # ------------------------------------------------------------------
@@ -80,7 +85,9 @@ class JointSimulationScenario:
     )
     post_ttt_breaks: tuple[float, ...] = (
         0.0,
+        3.0,
         6.0,
+        12.0,
         24.0,
         60.0,
     )
@@ -117,12 +124,13 @@ class JointSimulationScenario:
         -3.05,
     )
 
-    # Post-treatment survival effect by post-treatment interval.
-    delta_post: tuple[float, ...] = (
-        -0.35,
-        -0.20,
-        -0.06,
-    )
+    # ------------------------------------------------------------------
+    # Post-treatment survival effect: linear-trend parameterization
+    # ------------------------------------------------------------------
+    # For the default 5-bin post_ttt grid, these values closely reproduce the
+    # earlier baseline vector (-0.35, -0.28, -0.20, -0.12, -0.06).
+    delta_post_intercept: float = -0.202
+    delta_post_slope: float = 0.104
 
     # ------------------------------------------------------------------
     # Fixed effects
@@ -238,6 +246,22 @@ class JointSimulationScenario:
     def n_post_ttt_intervals(self) -> int:
         return len(self.post_ttt_breaks) - 1
 
+    @property
+    def post_index_scaled(self) -> tuple[float, ...]:
+        k_post = self.n_post_ttt_intervals
+        if k_post <= 1:
+            return (0.0,)
+        idx = np.arange(k_post, dtype=float)
+        idx = idx - idx.mean()
+        idx = idx / idx.std(ddof=0)
+        return tuple(float(x) for x in idx)
+
+    @property
+    def delta_post(self) -> tuple[float, ...]:
+        z = np.asarray(self.post_index_scaled, dtype=float)
+        vals = self.delta_post_intercept + self.delta_post_slope * z
+        return tuple(float(v) for v in vals)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -252,6 +276,9 @@ class JointSimulationScenario:
             "post_ttt_breaks": list(self.post_ttt_breaks),
             "alpha_surv": list(self.alpha_surv),
             "gamma_ttt": list(self.gamma_ttt),
+            "delta_post_intercept": self.delta_post_intercept,
+            "delta_post_slope": self.delta_post_slope,
+            "post_index_scaled": list(self.post_index_scaled),
             "delta_post": list(self.delta_post),
             "beta_surv": dict(self.beta_surv),
             "theta_ttt": dict(self.theta_ttt),
@@ -311,17 +338,13 @@ class JointSimulationScenario:
 
     def _validate_interval_vectors(self) -> None:
         if len(self.alpha_surv) != self.n_surv_intervals:
-            raise ValueError(
-                "len(alpha_surv) must equal len(surv_breaks) - 1."
-            )
+            raise ValueError("len(alpha_surv) must equal len(surv_breaks) - 1.")
         if len(self.gamma_ttt) != self.n_ttt_intervals:
-            raise ValueError(
-                "len(gamma_ttt) must equal len(ttt_breaks) - 1."
-            )
+            raise ValueError("len(gamma_ttt) must equal len(ttt_breaks) - 1.")
+        if self.n_post_ttt_intervals <= 0:
+            raise ValueError("post_ttt_breaks must define at least one interval.")
         if len(self.delta_post) != self.n_post_ttt_intervals:
-            raise ValueError(
-                "len(delta_post) must equal len(post_ttt_breaks) - 1."
-            )
+            raise ValueError("len(delta_post) must equal len(post_ttt_breaks) - 1.")
 
     def _validate_parameter_ranges(self) -> None:
         for value, name in [
@@ -480,18 +503,17 @@ def weak_post_treatment_effect_scenario(
     """
     Attenuated post-treatment effect to test detectability in lower-signal
     treatment-history settings.
+
+    This approximates the earlier weak vector
+      (-0.15, -0.10, -0.07, -0.04, -0.02)
+    using a model-matched linear trend.
     """
     return JointSimulationScenario(
         name=name,
         description=description,
         tags=tuple(tags),
-        delta_post=(
-            -0.15,
-            -0.10,
-            -0.07,
-            -0.04,
-            -0.02,
-        ),
+        delta_post_intercept=-0.076,
+        delta_post_slope=0.044,
     )
 
 

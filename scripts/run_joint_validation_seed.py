@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from seer_peph.data.prep import DAYS_PER_MONTH, build_survival_long, build_treatment_long
 from seer_peph.fitting.extract import (
     extract_joint_coupling,
     extract_spatial_fields,
@@ -30,8 +31,6 @@ from seer_peph.validation.joint_scenarios import (
     weak_post_treatment_effect_scenario,
 )
 from seer_peph.validation.simulate_joint import simulate_joint_scenario
-from seer_peph.data.prep import build_survival_long, build_treatment_long
-from seer_peph.data.prep import DAYS_PER_MONTH, build_survival_long, build_treatment_long
 
 
 SCENARIO_REGISTRY: dict[str, callable] = {
@@ -189,6 +188,22 @@ def _make_scalar_recovery_table(
     df_name: str,
     parameter_prefix: str | None = None,
 ) -> pd.DataFrame:
+    if df_name not in posterior_summary:
+        return pd.DataFrame(
+            columns=[
+                "parameter",
+                "label",
+                "truth",
+                "posterior_mean",
+                "posterior_median",
+                "bias_mean",
+                "abs_error_mean",
+                "covered_90",
+                "q05",
+                "q95",
+            ]
+        )
+
     df = posterior_summary[df_name].copy()
     truth_rows: list[dict[str, Any]] = []
 
@@ -416,7 +431,6 @@ def _make_fit_diagnostics_table(fit) -> pd.DataFrame:
         }
     )
 
-    # Divergences from extra sampler fields saved in samples.
     div = None
     if hasattr(fit, "samples") and isinstance(fit.samples, dict):
         div = fit.samples.get("diverging")
@@ -437,7 +451,8 @@ def _make_fit_diagnostics_table(fit) -> pd.DataFrame:
         )
 
     return pd.DataFrame(rows)
-    
+
+
 def main() -> None:
     args = _parse_args()
     scenario = _get_scenario(args.scenario)
@@ -526,6 +541,12 @@ def main() -> None:
     alpha_truth = _vector_truth_map(sim.parameter_truth, parameter_name="alpha_surv")
     gamma_truth = _vector_truth_map(sim.parameter_truth, parameter_name="gamma_ttt")
     delta_truth = _vector_truth_map(sim.parameter_truth, parameter_name="delta_post")
+    delta_linear_truth = {
+        str(row["parameter"]): float(row["truth"])
+        for _, row in sim.parameter_truth.loc[
+            sim.parameter_truth["group"] == "post_treatment_effect_linear"
+        ].iterrows()
+    }
 
     survival_beta_recovery = _make_scalar_recovery_table(
         scalar_truth=beta_truth,
@@ -555,6 +576,12 @@ def main() -> None:
         index_col_candidates=("index", "k_post", "post_interval_index"),
         group_name="delta_post",
     )
+    survival_delta_linear_recovery = _make_scalar_recovery_table(
+        scalar_truth=delta_linear_truth,
+        posterior_summary=surv_summary,
+        df_name="delta_post_linear",
+    )
+
     area_recovery = _make_area_recovery_table(
         area_truth=sim.area_truth,
         spatial_summary=spatial_summary,
@@ -567,6 +594,10 @@ def main() -> None:
     survival_alpha_recovery.to_csv(out_dir / "recovery_survival_alpha.csv", index=False)
     treatment_gamma_recovery.to_csv(out_dir / "recovery_treatment_gamma.csv", index=False)
     survival_delta_recovery.to_csv(out_dir / "recovery_survival_delta_post.csv", index=False)
+    survival_delta_linear_recovery.to_csv(
+        out_dir / "recovery_survival_delta_post_linear.csv",
+        index=False,
+    )
     area_recovery.to_csv(out_dir / "recovery_area_fields.csv", index=False)
     area_field_summary.to_csv(out_dir / "recovery_area_field_summary.csv", index=False)
     fit_diagnostics.to_csv(out_dir / "fit_diagnostics.csv", index=False)

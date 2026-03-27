@@ -47,13 +47,12 @@ def model(data: Mapping[str, Any]) -> None:
 
     Notes
     -----
-    - The survival side uses the current delta-only post-treatment parameterization.
+    - The survival side uses a delta-only post-treatment parameterization.
+    - Here delta_post is constrained to follow an intercept + linear trend
+      over the post-treatment interval index.
     - The treatment side is a standalone spatial piecewise-exponential model.
     - The joint model couples the two processes only through correlated
       area-level frailties.
-    - The delta_post prior is a non-centered first-order random walk:
-          delta_post = delta_post_level + sigma_delta_rw * cumsum(increments)
-      which induces shrinkage on adjacent differences.
     """
 
     # ------------------------------------------------------------------
@@ -123,27 +122,26 @@ def model(data: Mapping[str, Any]) -> None:
     alpha = numpyro.sample("alpha", dist.Normal(0.0, 2.0).expand([K_surv]))
     beta = numpyro.sample("beta", dist.Normal(0.0, 1.0).expand([P_surv]))
 
-    # Non-centered first-order random-walk prior for delta_post.
-    # This separates the overall level from the local roughness.
-    delta_post_level = numpyro.sample("delta_post_level", dist.Normal(0.0, 0.5))
-    sigma_delta_rw = numpyro.sample("sigma_delta_rw", dist.HalfNormal(0.25))
+    # Intercept + linear trend over centered/scaled post-treatment interval index.
+    delta_post_intercept = numpyro.sample(
+        "delta_post_intercept",
+        dist.Normal(0.0, 0.5),
+    )
+    delta_post_slope = numpyro.sample(
+        "delta_post_slope",
+        dist.Normal(0.0, 0.5),
+    )
 
     if K_post > 1:
-        z_delta_rw = numpyro.sample(
-            "z_delta_rw",
-            dist.Normal(0.0, 1.0).expand([K_post - 1]),
-        )
-        delta_steps = jnp.concatenate(
-            [jnp.zeros(1), jnp.cumsum(z_delta_rw)],
-            axis=0,
-        )
+        post_index = jnp.arange(K_post, dtype=X_surv.dtype)
+        post_index_centered = post_index - jnp.mean(post_index)
+        post_index_scaled = post_index_centered / jnp.std(post_index)
     else:
-        z_delta_rw = jnp.zeros((0,), dtype=X_surv.dtype)
-        delta_steps = jnp.zeros((1,), dtype=X_surv.dtype)
+        post_index_scaled = jnp.zeros((1,), dtype=X_surv.dtype)
 
     delta_post = numpyro.deterministic(
         "delta_post",
-        delta_post_level + sigma_delta_rw * delta_steps,
+        delta_post_intercept + delta_post_slope * post_index_scaled,
     )
 
     # ------------------------------------------------------------------
