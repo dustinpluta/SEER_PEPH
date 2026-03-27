@@ -1,0 +1,18 @@
+{
+  "out_dir": "artifacts/joint_validation_quick",
+  "scenarios": ["J00"],
+  "seeds": [101, 202, 303],
+  "inference": {
+    "num_chains": 1,
+    "num_warmup": 200,
+    "num_samples": 200,
+    "target_accept_prob": 0.9,
+    "dense_mass": false,
+    "max_tree_depth": 8,
+    "progress_bar": false
+  },
+  "metadata": {
+    "study_name": "joint_model_matched_validation_v1",
+    "notes": "Initial formal model-matched validation study."
+  }
+}
